@@ -1,0 +1,40 @@
+# 密钥与本地配置
+.env
+.env.*
+!.env.example
+
+# 虚拟环境与 Python 缓存
+.venv/
+.venv-*/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.pyo
+*.bak
+
+# 测试、工具与 Streamlit 缓存
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.streamlit/cache/
+*.log
+
+# 本地上传、导出、工作目录与调试图片
+outputs/
+work/
+test_images/
+tests/debug_crops/
+tests/debug_bbox_crops/
+tests/debug_preprocess/
+*.jpg
+*.jpeg
+*.png
+*.csv
+*.xlsx
+*.docx
+
+# 系统与编辑器文件
+.DS_Store
+Thumbs.db
+.vscode/
