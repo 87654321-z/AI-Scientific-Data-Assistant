@@ -37,11 +37,13 @@ AI 视觉识别或本地基础 OCR
 - AI 建议不会自动覆盖原始观察值或最终确认值。
 - 缺失和不确定数据会被保留或标记，不应伪装成真实测量数据。
 
-## Demo
+## 在线 Demo
 
-在线 Demo：部署完成后请在这里填写当前的 `streamlit.app` 地址。
+[打开 AI Scientific Data Assistant 在线 Demo](https://ai-scientific-data-assistant-ahejfrqnxnjbs7olako2ju.streamlit.app/Data_Upload)
 
 当前 Demo 用于功能测试。公开部署不会附带免费模型调用额度，建议使用自己的 API Key。
+
+## Demo 截图
 
 ### 项目首页
 
@@ -130,13 +132,13 @@ ARK_MODEL="你的 Model ID"
 ARK_BASE_URL="https://ark.cn-beijing.volces.com/api/v3"
 ```
 
-## 运行
+## 本地运行
 
 ```powershell
 .\.venv\Scripts\python -m streamlit run app.py
 ```
 
-浏览器打开：<http://localhost:8501>
+本地开发时，在浏览器打开：<http://localhost:8501>。普通用户也可以直接使用上方的在线 Demo，无需访问本地地址。
 
 ## 示例使用流程
 
