@@ -37,6 +37,24 @@ AI 视觉识别或本地基础 OCR
 - AI 建议不会自动覆盖原始观察值或最终确认值。
 - 缺失和不确定数据会被保留或标记，不应伪装成真实测量数据。
 
+## Demo
+
+### 项目首页
+
+![Scientific Data Assistant 项目首页](docs/images/home.png)
+
+### 数据导入
+
+支持实验记录图片、CSV、Excel 和 Word 文件的上传与预览。
+
+![数据导入页面](docs/images/data-upload.png)
+
+### AI 科研数据整理
+
+上传实验记录图片后，可进入 AI 识别、人工确认和 Excel 导出流程。
+
+![AI 科研数据整理页面](docs/images/ai-data-processing.png)
+
 ## 技术架构
 
 ```text

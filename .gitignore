@@ -30,6 +30,7 @@ tests/debug_preprocess/
 *.jpg
 *.jpeg
 *.png
+!docs/images/*.png
 *.csv
 *.xlsx
 *.docx
