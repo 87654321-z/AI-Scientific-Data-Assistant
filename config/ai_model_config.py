@@ -58,21 +58,38 @@ def _read_streamlit_secrets() -> dict[str, str]:
             for key in ("ARK_API_KEY", "ARK_MODEL", "ARK_BASE_URL")
             if (value := st.secrets.get(key)) is not None
         }
-    except (FileNotFoundError, ImportError, KeyError, RuntimeError):
+    except Exception:
+        # Streamlit 在本地没有 secrets.toml 时会抛出专用异常。
+        # Secrets 是最低优先级来源，读取失败不应影响网页配置或 .env。
         return {}
 
 
 def get_ai_model_config() -> AIModelConfig:
     """按“网页输入 > 本地 .env/环境变量 > Streamlit Secrets”读取配置。"""
     web_config = _read_web_config()
+
+    web_api_key = _clean(web_config.get("ARK_API_KEY"))
+    web_model = _clean(web_config.get("ARK_MODEL"))
+    web_base_url = _clean(web_config.get("ARK_BASE_URL"))
+    if web_api_key and web_model and web_base_url:
+        return AIModelConfig(
+            api_key=web_api_key,
+            model=web_model,
+            base_url=web_base_url,
+        )
+
     dotenv_config = dotenv_values(PROJECT_ROOT / ".env")
+    environment_config = {
+        key: os.getenv(key)
+        for key in ("ARK_API_KEY", "ARK_MODEL", "ARK_BASE_URL")
+    }
     secrets_config = _read_streamlit_secrets()
 
     def resolve(key: str) -> str | None:
         return (
             _clean(web_config.get(key))
             or _clean(dotenv_config.get(key))
-            or _clean(os.getenv(key))
+            or _clean(environment_config.get(key))
             or _clean(secrets_config.get(key))
         )
 

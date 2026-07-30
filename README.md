@@ -94,11 +94,11 @@ python -m venv .venv
 
 网页输入的 API Key 只保存在当前 Streamlit 会话内，不写入数据库、项目文件或 Git。
 
-### 本地运行：填写 `.env`
+### 本地开发：填写 `.env`
 
 不使用真实视觉模型时，仍可使用文件预览、EasyOCR 和 Mock 测试流程。
 
-若要使用 Doubao Vision：
+`.env` 主要用于开发者在自己电脑上运行和调试。若要在本地开发环境使用 Doubao Vision：
 
 1. 复制 `.env.example` 为 `.env`。
 2. 在 `.env` 中填写自己的 Ark API Key 和模型 ID。
@@ -120,7 +120,7 @@ ARK_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
 
 ### 在线 Demo：填写网页配置
 
-打开左侧菜单中的“AI 模型设置”，填写自己的 API Key、Model ID 和 Base URL，然后返回“OCR 识别”页面。关闭网页会话后，网页配置不会永久保存。
+普通用户请打开左侧菜单中的“AI 模型设置”，填写自己的 API Key、Model ID 和 Base URL，然后返回“OCR 识别”页面。网页配置会直接用于后续 AI 调用；关闭网页会话后不会永久保存。
 
 Streamlit Cloud 的维护者也可以在应用 Secrets 中配置：
 
