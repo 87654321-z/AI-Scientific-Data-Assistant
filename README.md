@@ -39,6 +39,10 @@ AI 视觉识别或本地基础 OCR
 
 ## Demo
 
+在线 Demo：部署完成后请在这里填写当前的 `streamlit.app` 地址。
+
+当前 Demo 用于功能测试。公开部署不会附带免费模型调用额度，建议使用自己的 API Key。
+
 ### 项目首页
 
 ![Scientific Data Assistant 项目首页](docs/images/home.png)
@@ -76,7 +80,21 @@ python -m venv .venv
 .\.venv\Scripts\python -m pip install -r requirements.txt
 ```
 
-## 配置 Doubao Vision（可选）
+## 模型配置说明
+
+本项目不提供免费的模型调用额度。使用真实视觉模型时，用户需要配置自己的 API Key，并自行承担模型服务可能产生的费用。
+
+当前 `DoubaoProvider` 使用兼容 OpenAI 的接口格式。配置层支持填写 API Key、Model ID 和 Base URL，因此也为其他兼容 OpenAI 接口的视觉模型预留了接入方式；不同服务的请求参数兼容性仍需自行验证。
+
+配置读取优先级：
+
+1. “AI 模型设置”网页中填写的当前会话配置。
+2. 本地 `.env` 或环境变量。
+3. Streamlit Cloud Secrets。
+
+网页输入的 API Key 只保存在当前 Streamlit 会话内，不写入数据库、项目文件或 Git。
+
+### 本地运行：填写 `.env`
 
 不使用真实视觉模型时，仍可使用文件预览、EasyOCR 和 Mock 测试流程。
 
@@ -99,6 +117,18 @@ ARK_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
 ```
 
 真实 API 调用可能产生费用，请先阅读对应平台的价格和权限说明。
+
+### 在线 Demo：填写网页配置
+
+打开左侧菜单中的“AI 模型设置”，填写自己的 API Key、Model ID 和 Base URL，然后返回“OCR 识别”页面。关闭网页会话后，网页配置不会永久保存。
+
+Streamlit Cloud 的维护者也可以在应用 Secrets 中配置：
+
+```toml
+ARK_API_KEY="你的 API Key"
+ARK_MODEL="你的 Model ID"
+ARK_BASE_URL="https://ark.cn-beijing.volces.com/api/v3"
+```
 
 ## 运行
 

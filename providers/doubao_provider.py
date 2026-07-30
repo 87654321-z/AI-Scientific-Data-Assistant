@@ -2,13 +2,12 @@
 
 import base64
 import json
-import os
 import re
 from copy import deepcopy
 
-from dotenv import load_dotenv
 from openai import OpenAI
 
+from config.ai_model_config import get_ai_model_config
 from core.schemas import ColumnInfo, DataRow, ExperimentResult, SourceFile, UncertainItem
 from prompts.local_region_pair_prompt import (
     LOCAL_REGION_PAIR_MODE,
@@ -103,17 +102,14 @@ class DoubaoProvider(VisionProvider):
         images: list[SourceFile],
         experiment_context: str | None = None,
     ) -> ExperimentResult:
-        load_dotenv()
-        api_key = os.getenv("ARK_API_KEY")
-        model = os.getenv("ARK_MODEL")
-        base_url = os.getenv(
-            "ARK_BASE_URL",
-            "https://ark.cn-beijing.volces.com/api/v3",
-        )
+        config = get_ai_model_config()
+        api_key = config.api_key
+        model = config.model
+        base_url = config.base_url
         if not api_key:
-            raise ValueError("未配置 ARK_API_KEY。请在项目根目录的 .env 文件中设置它。")
+            raise ValueError("未配置 API Key。请在“AI 模型设置”页面或项目根目录的 .env 中填写。")
         if not model:
-            raise ValueError("未配置 ARK_MODEL。请在 .env 文件中填写豆包模型 ID 或推理接入点。")
+            raise ValueError("未配置 Model ID。请在“AI 模型设置”页面或 .env 中填写。")
         if len(images) != 1:
             raise ValueError("豆包测试模式当前只支持一张图片。")
 
