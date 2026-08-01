@@ -26,6 +26,11 @@ from core.scientific_notation import (
     is_structured_identifier_field,
     normalize_scientific_identifier_storage,
 )
+from utils.validation_ui import (
+    clear_validation_state,
+    render_mock_validation_panel,
+    render_validation_panel,
+)
 
 
 @st.cache_resource(show_spinner=False)
@@ -600,6 +605,7 @@ def render_ai_result(doubao_result, image_id: str, timings: dict[str, float]) ->
         return styles
 
     st.dataframe(display_dataframe.style.apply(highlight_cells, axis=1), width="stretch", hide_index=True)
+    render_validation_panel(doubao_result, image_id, provider_name="doubao")
     with st.expander("查看 AI 原始识别文本", expanded=False):
         st.text(doubao_result.raw_text)
     model_response_logs = getattr(doubao_result, "model_response_logs", [])
@@ -889,6 +895,7 @@ def render_developer_mock(uploaded_image, image_id: str) -> None:
         st.warning("以下内容为模拟 AI 结果，不能当作真实实验测量数据。")
         st.write("原始模拟文本：", mock_result.raw_text)
         st.dataframe(pd.DataFrame([row.values for row in mock_result.rows]), width="stretch")
+        render_mock_validation_panel(mock_result, f"developer-{image_id}")
 
 
 st.title("AI 科研数据整理")
@@ -951,6 +958,7 @@ else:
                         provider_name="doubao",
                         enable_preprocessing=enable_preprocessing,
                     )
+                    clear_validation_state(st.session_state, image_id)
                     api_call_seconds = time.perf_counter() - api_call_started
                 timings["api_call_seconds"] = api_call_seconds
                 timings["model_return_seconds"] = api_call_seconds
