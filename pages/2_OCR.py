@@ -389,7 +389,8 @@ def build_display_dataframe(
     ]
     dataframe = pd.DataFrame(rows).reindex(columns=internal_names)
     dataframe = dataframe.rename(columns=display_names)
-    dataframe.insert(0, "序号", range(1, len(dataframe) + 1))
+    if "序号" not in dataframe.columns:
+        dataframe.insert(0, "序号", range(1, len(dataframe) + 1))
     # 重复信息只用于当前页面显示，不写入 treatment 等原始数据字段。
     replicate_labels = []
     for source_row_index in source_row_indices:
