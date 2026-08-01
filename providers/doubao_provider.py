@@ -3,12 +3,14 @@
 import base64
 import json
 import re
+import time
 from copy import deepcopy
 
 from openai import OpenAI
 
 from config.ai_model_config import get_ai_model_config
 from core.schemas import ColumnInfo, DataRow, ExperimentResult, SourceFile, UncertainItem
+from prompts.extraction_prompt import EXTRACTION_STAGE, build_extraction_prompt
 from prompts.local_region_pair_prompt import (
     LOCAL_REGION_PAIR_MODE,
     build_local_region_pair_prompt,
@@ -22,6 +24,7 @@ class DoubaoProvider(VisionProvider):
     """通过火山方舟的 OpenAI 兼容接口调用单张图片理解模型。"""
 
     name = "doubao"
+    API_TIMEOUT_SECONDS = 180.0
 
     _EXPLANATORY_PLACEHOLDER = re.compile(
         r"\[[^\]]*\b(?:stylized|unclear|unknown|character|symbol)\b[^\]]*\]",
@@ -33,6 +36,10 @@ class DoubaoProvider(VisionProvider):
     )
     _HALLUCINATED_TREATMENT_SEGMENT = re.compile(r"(?<=/)AXL(?=/|$)", re.IGNORECASE)
     _REPLICATE_METADATA_FIELDS = {"replicate_group", "replicate_index"}
+    _JSON_RETRY_INSTRUCTION = (
+        "\n\n上一结果不是完整 JSON，请仅返回完整 JSON，不要解释。"
+        "必须从 JSON 开始符号写到完整闭合符号，禁止 Markdown。"
+    )
 
     @staticmethod
     def _format_api_error(error: Exception) -> str:
@@ -51,18 +58,37 @@ class DoubaoProvider(VisionProvider):
         body = getattr(error, "body", None)
         message = getattr(error, "message", None) or str(error)
 
-        category = {
-            400: "请求参数、模型 ID 或图片格式可能有误",
-            401: "API Key 无效或未授权",
-            403: "账户或模型没有访问权限",
-            404: "模型 ID 或接口地址不存在",
-            429: "请求过于频繁、账户额度不足或余额不足",
-        }.get(status_code, "网络、服务端或未知请求错误")
+        error_type = type(error).__name__
+        if error_type in {
+            "APITimeoutError",
+            "TimeoutException",
+            "ReadTimeout",
+            "ConnectTimeout",
+            "TimeoutError",
+        }:
+            error_category = "请求超时"
+            possible_reason = (
+                f"AI 模型在 {DoubaoProvider.API_TIMEOUT_SECONDS:g} 秒内没有返回结果。"
+                "可能是图片较大、模型繁忙或网络响应较慢，请稍后重试。"
+            )
+        elif error_type in {"APIConnectionError", "ConnectError"}:
+            error_category = "网络错误"
+            possible_reason = "无法连接 AI 模型服务，请检查网络、Base URL 和服务状态"
+        else:
+            error_category = "API 错误"
+            possible_reason = {
+                400: "请求参数、模型 ID 或图片格式可能有误",
+                401: "API Key 无效或未授权",
+                403: "账户或模型没有访问权限",
+                404: "模型 ID 或接口地址不存在",
+                429: "请求过于频繁、账户额度不足或余额不足",
+            }.get(status_code, "服务端或未知 API 请求错误")
 
         details = [
             "豆包 API 请求失败。",
-            f"错误类型：{type(error).__name__}",
-            f"可能原因：{category}",
+            f"错误分类：{error_category}",
+            f"错误类型：{error_type}",
+            f"可能原因：{possible_reason}",
         ]
         if status_code is not None:
             details.append(f"HTTP 状态码：{status_code}")
@@ -75,6 +101,81 @@ class DoubaoProvider(VisionProvider):
         if request_id:
             details.append(f"Request ID：{request_id}")
         return "\n".join(details)
+
+    @staticmethod
+    def _usage_to_text(usage) -> str:
+        """把 token 用量转换为不含敏感配置的短文本。"""
+        if usage is None:
+            return "未提供"
+        if hasattr(usage, "model_dump"):
+            usage_data = usage.model_dump()
+        elif isinstance(usage, dict):
+            usage_data = usage
+        else:
+            return str(usage)
+        keys = ("prompt_tokens", "completion_tokens", "total_tokens")
+        return ", ".join(f"{key}={usage_data.get(key)}" for key in keys)
+
+    @staticmethod
+    def _response_log(stage: str, content: str, diagnostics: dict[str, str]) -> dict[str, str]:
+        """构造可保存到 ExperimentResult 的响应日志，不包含 API Key。"""
+        return {
+            "stage": stage,
+            "content": content,
+            "response_id": diagnostics.get("response_id", ""),
+            "finish_reason": diagnostics.get("finish_reason", ""),
+            "token_usage": diagnostics.get("token_usage", "未提供"),
+            "output_length": diagnostics.get("output_length", str(len(content))),
+            "api_elapsed_seconds": diagnostics.get("api_elapsed_seconds", ""),
+        }
+
+    @staticmethod
+    def _is_truncated_response(error: ValueError, diagnostics: dict[str, str]) -> bool:
+        """结合服务端结束原因与 JSON 错误判断是否属于输出截断。"""
+        if diagnostics.get("finish_reason", "").lower() == "length":
+            return True
+        raw_content = getattr(error, "raw_content", "")
+        stripped_content = raw_content.rstrip()
+        return bool(stripped_content) and not stripped_content.endswith(("}", "]"))
+
+    @classmethod
+    def _raise_final_json_error(
+        cls,
+        error: ValueError,
+        diagnostics: dict[str, str],
+        first_error: ValueError,
+        first_diagnostics: dict[str, str],
+    ) -> None:
+        """在一次重试仍失败后，抛出包含分类与两次诊断的最终异常。"""
+        category = (
+            "输出截断"
+            if cls._is_truncated_response(error, diagnostics)
+            else "JSON 解析错误"
+        )
+        message = (
+            f"{category}：豆包连续两次没有返回可解析的完整 JSON。"
+            "\n已按限制自动重试 1 次，不再继续请求。"
+            f"\n首次响应：response_id={first_diagnostics.get('response_id', '')}, "
+            f"finish_reason={first_diagnostics.get('finish_reason', '')}, "
+            f"token_usage={first_diagnostics.get('token_usage', '未提供')}, "
+            f"输出长度={first_diagnostics.get('output_length', '')}, "
+            f"API耗时={first_diagnostics.get('api_elapsed_seconds', '')}秒。"
+            f"\n重试响应：response_id={diagnostics.get('response_id', '')}, "
+            f"finish_reason={diagnostics.get('finish_reason', '')}, "
+            f"token_usage={diagnostics.get('token_usage', '未提供')}, "
+            f"输出长度={diagnostics.get('output_length', '')}, "
+            f"API耗时={diagnostics.get('api_elapsed_seconds', '')}秒。"
+            f"\n首次解析错误：{first_error}"
+            f"\n重试解析错误：{error}"
+        )
+        final_error = ValueError(message)
+        final_error.error_category = category
+        final_error.raw_content = getattr(error, "raw_content", "")
+        final_error.response_diagnostics = {
+            "first": first_diagnostics,
+            "retry": diagnostics,
+        }
+        raise final_error from error
 
     @classmethod
     def _sanitize_observed_value(cls, value, field_name: str | None = None):
@@ -101,7 +202,11 @@ class DoubaoProvider(VisionProvider):
         self,
         images: list[SourceFile],
         experiment_context: str | None = None,
+        *,
+        stage: str = EXTRACTION_STAGE,
     ) -> ExperimentResult:
+        if stage not in {"legacy", EXTRACTION_STAGE}:
+            raise ValueError(f"不支持的视觉处理阶段：{stage}")
         config = get_ai_model_config()
         api_key = config.api_key
         model = config.model
@@ -121,25 +226,87 @@ class DoubaoProvider(VisionProvider):
 
         image_base64 = base64.b64encode(image.content).decode("ascii")
         is_local_region_pair_mode = experiment_context == LOCAL_REGION_PAIR_MODE
-        prompt = (
-            build_local_region_pair_prompt()
-            if is_local_region_pair_mode
-            else build_scientific_data_prompt(experiment_context)
-        )
+        if is_local_region_pair_mode:
+            prompt = build_local_region_pair_prompt()
+        elif stage == EXTRACTION_STAGE:
+            prompt = build_extraction_prompt(experiment_context)
+        else:
+            prompt = build_scientific_data_prompt(experiment_context)
         client = OpenAI(
             base_url=base_url,
             api_key=api_key,
+            timeout=self.API_TIMEOUT_SECONDS,
+            max_retries=0,
         )
 
         try:
-            content = self._request_vision_text(client, model, prompt, image.file_type, image_base64)
-            result = (
-                self._to_local_region_pair_result(content, images)
-                if is_local_region_pair_mode
-                else self._to_experiment_result(content, images)
+            first_diagnostics: dict[str, str] = {}
+            content = self._request_vision_text(
+                client,
+                model,
+                prompt,
+                image.file_type,
+                image_base64,
+                first_diagnostics,
             )
-            result.model_response_logs.append({"stage": "首次视觉识别", "content": content})
-            if is_local_region_pair_mode:
+            parser = (
+                self._to_local_region_pair_result
+                if is_local_region_pair_mode
+                else self._to_experiment_result
+            )
+            try:
+                result = parser(content, images)
+            except ValueError as first_error:
+                if not hasattr(first_error, "raw_content"):
+                    raise
+                retry_diagnostics: dict[str, str] = {}
+                retry_content = self._request_vision_text(
+                    client,
+                    model,
+                    prompt + self._JSON_RETRY_INSTRUCTION,
+                    image.file_type,
+                    image_base64,
+                    retry_diagnostics,
+                )
+                try:
+                    result = parser(retry_content, images)
+                except ValueError as retry_error:
+                    self._raise_final_json_error(
+                        retry_error,
+                        retry_diagnostics,
+                        first_error,
+                        first_diagnostics,
+                    )
+                result.model_response_logs.append(
+                    self._response_log(
+                        "阶段1实验数据提取（JSON解析失败）"
+                        if stage == EXTRACTION_STAGE
+                        else "首次视觉识别（JSON解析失败）",
+                        content,
+                        first_diagnostics,
+                    )
+                )
+                result.model_response_logs.append(
+                    self._response_log(
+                        "阶段1实验数据提取（自动重试成功）"
+                        if stage == EXTRACTION_STAGE
+                        else "首次视觉识别（自动重试成功）",
+                        retry_content,
+                        retry_diagnostics,
+                    )
+                )
+                content = retry_content
+            else:
+                result.model_response_logs.append(
+                    self._response_log(
+                        "阶段1实验数据提取"
+                        if stage == EXTRACTION_STAGE
+                        else "首次视觉识别",
+                        content,
+                        first_diagnostics,
+                    )
+                )
+            if is_local_region_pair_mode or stage == EXTRACTION_STAGE:
                 return result
             return self._add_validation_findings(
                 client,
@@ -161,8 +328,10 @@ class DoubaoProvider(VisionProvider):
         prompt: str,
         file_type: str,
         image_base64: str,
+        diagnostics: dict[str, str] | None = None,
     ) -> str:
         """发送图片和提示词，并返回模型的原始文本。"""
+        started_at = time.perf_counter()
         response = client.chat.completions.create(
             model=model,
             messages=[{
@@ -176,7 +345,18 @@ class DoubaoProvider(VisionProvider):
                 ],
             }],
         )
-        return response.choices[0].message.content or ""
+        elapsed_seconds = time.perf_counter() - started_at
+        choice = response.choices[0]
+        content = choice.message.content or ""
+        if diagnostics is not None:
+            diagnostics.update({
+                "response_id": str(getattr(response, "id", "") or ""),
+                "finish_reason": str(getattr(choice, "finish_reason", "") or ""),
+                "token_usage": DoubaoProvider._usage_to_text(getattr(response, "usage", None)),
+                "output_length": str(len(content)),
+                "api_elapsed_seconds": f"{elapsed_seconds:.3f}",
+            })
+        return content
 
     def _add_validation_findings(
         self,
@@ -190,14 +370,18 @@ class DoubaoProvider(VisionProvider):
         """执行只读二次检查；失败时保留首轮识别结果，不丢弃任何实验行。"""
         try:
             validation_prompt = build_scientific_data_validation_prompt(first_pass_content)
+            validation_diagnostics: dict[str, str] = {}
             validation_content = self._request_vision_text(
                 client,
                 model,
                 validation_prompt,
                 file_type,
                 image_base64,
+                validation_diagnostics,
             )
-            result.model_response_logs.append({"stage": "二次一致性校验", "content": validation_content})
+            result.model_response_logs.append(
+                self._response_log("二次一致性校验", validation_content, validation_diagnostics)
+            )
             validation_data = json.loads(validation_content)
         except Exception as error:
             # 二次检查不能影响首轮已保留的数据；把问题写入警告供人工查看。
