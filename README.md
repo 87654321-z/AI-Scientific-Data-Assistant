@@ -1,6 +1,6 @@
 # AI Scientific Data Assistant
 
-> v0.2.1.2 · 面向科研实验记录的 AI 结构化整理、人工确认与 Excel 导出工具
+> v0.2.2.3 · 面向科研实验记录的 AI 结构化提取、独立校验、人工确认与 Excel 导出工具
 
 AI Scientific Data Assistant（AI 科研数据整理助手）尝试解决一个具体问题：把实验记录图片、Word 文档和半成品表格整理成可检查的结构化数据。
 
@@ -62,6 +62,10 @@ AI 提取图片中可见的实验数据
 - 基于火山引擎 Ark 的 Doubao Vision 单图科研记录识别。
 - v0.2.1.2 默认使用精简 Extraction 模式提取结构化观察数据。
 - 保留 legacy 识别模式作为开发回退方案。
+- 对 Extraction 结果运行独立 Validation，不重新识别图片、不修改原始观察数据。
+- Validation 支持 Mock 测试模式和真实 Doubao Provider，失败时不会阻断主流程。
+- Validation findings 按 high、medium、low 分级，并在展示前进行去重、定位优先排序和数量限制。
+- ValidationRunLog 记录模型、耗时、成功状态、错误类别和经过密钥遮蔽的原始响应。
 - 原始观察值、AI 建议值和用户最终确认值的来源区分。
 - 不确定项人工处理：保留原始识别、采用建议或手动修改。
 - 导出包含“整理后数据”“字段说明”“识别记录”的 XLSX 文件。
@@ -90,7 +94,25 @@ AI 提取图片中可见的实验数据
 
 当前默认流程已切换到阶段1 Extraction：模型只负责提取 `columns`、`observed_rows`、重复关系和简短警告。旧 legacy 模式仍保留。Provider 还增加了单次 180 秒超时保护和可理解的错误分类。
 
-阶段2 Validation 目前仍是设计目标，尚未正式接入默认流程。
+### v0.2.2：独立 Validation
+
+第二阶段不再把异常检查塞回图片提取 Prompt，而是只接收 Extraction 已生成的结构化数据。Validation 有独立的数据结构、Provider、Prompt 和 Session State；即使模型校验失败，用户仍可继续检查 Extraction 表格并导出 Excel。
+
+当前已接通 Mock Validation 和真实 Doubao Validation。它们只返回 warnings、suggestions 和 uncertain_items，不重新查看图片，也不允许修改或补造原始实验数据。
+
+### v0.2.2.3：Validation Reliability
+
+真实测试曾出现 12 行数据产生 24 条 warning、0 条 suggestion 和 1 条 uncertain item；同一输入复测时数量又明显变化。这说明“API 调用成功”不等于 finding 稳定可靠。
+
+因此项目增加了：
+
+- ValidationRunLog，用于记录调用耗时、模型、响应状态和安全原始响应；
+- severity、confidence 和 location_status，区分影响程度、模型确信程度和定位状态；
+- Quality Filter，在不删除原始 findings 的前提下去重、排序和限制中低优先级数量；
+- 原始 ValidationResult 与页面展示结果分离；
+- high findings 全部保留，低风险项折叠展示。
+
+这些机制改善的是可观测性和用户阅读体验，不代表模型判断一定正确。
 
 ## System Architecture｜系统架构
 
@@ -110,10 +132,32 @@ Streamlit 页面（上传、展示、人工确认）
 阶段1 Extraction：图片 → columns + observed_rows
                     │
                     ▼
-     人工检查与确认 → ExperimentResult → Excel
-
-阶段2 Validation：异常检查与 AI 建议（规划中）
+        ExperimentResult（原始观察数据）
+                    │
+          ┌─────────┴─────────┐
+          ▼                   ▼
+   人工确认主流程      阶段2 Validation（可选）
+                          │
+              warnings / suggestions /
+                  uncertain_items
+                          │
+                          ▼
+                   Quality Filter
+             去重 / 分级 / 排序 / 限量
+          └─────────┬─────────┘
+                    ▼
+            用户人工检查与确认
+                    │
+                    ▼
+                   Excel
 ```
+
+架构边界：
+
+- Validation 只检查 Extraction 结果，不修改 `ExperimentResult`。
+- Validation 是可选步骤，失败不会阻断人工确认和 Excel 导出。
+- Quality Filter 只生成展示副本；重复或受限 findings 仍然保留。
+- severity 和 confidence 只帮助排序与判断，不能授权 AI 自动修改数据。
 
 目录职责：
 
@@ -125,6 +169,17 @@ providers/   统一 VisionProvider 接口与模型实现
 prompts/     Extraction、legacy 和实验性提示词
 tests/       单元测试、回归测试与临时研究脚本
 docs/        架构设计、benchmark 和实验报告
+```
+
+Validation 相关模块：
+
+```text
+core/validation_service.py       独立校验编排与 Extraction 只读保护
+core/validation_schemas.py       ValidationResult、finding 与运行日志
+core/validation_quality.py       finding 去重、排序和数量限制
+providers/*validation*           Mock 与真实 Validation Provider
+prompts/validation_prompt.py     只检查结构化数据的 Prompt
+utils/validation_ui.py           独立状态、失败降级与分级展示
 ```
 
 网页、未来命令行工具或其他 AI 平台适配层可以复用同一套核心流程。DoubaoProvider 是当前首个真实模型实现，不代表项目绑定某一家平台。
@@ -150,6 +205,20 @@ docs/        架构设计、benchmark 和实验报告
 - 不同行数结果仍需结合人工标注判断，JSON 完整不等于识别内容完全正确。
 
 完整实验记录见 [`docs/v0.2.1_extraction_full_benchmark_report.md`](docs/v0.2.1_extraction_full_benchmark_report.md) 和 [`docs/v0.2.1_integration_report.md`](docs/v0.2.1_integration_report.md)。
+
+### Validation 质量观察
+
+当前 Validation 只完成小样本工程验证，尚未建立足够规模的人工标注准确率数据。
+
+| 测试观察 | 结果 |
+|---|---:|
+| 单张真实图片 Extraction 行数 | 12 |
+| 一次 Validation warnings | 24 |
+| 一次 Validation suggestions | 0 |
+| 一次 Validation uncertain_items | 1 |
+| 同图复测是否出现数量波动 | 是 |
+
+这组数据推动了 Reliability Layer 的设计，但不能用于推断通用准确率。Quality Filter 可以减少重复和低价值展示，却不能证明保留下来的 finding 一定正确。
 
 ## 安装
 
@@ -206,15 +275,18 @@ ARK_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
 2. 在“AI 模型设置”中填写自己的 API Key、Model ID 和 Base URL。
 3. 打开“OCR 识别”，上传一张 PNG、JPG 或 JPEG 实验记录图片。
 4. 点击“开始 AI 科研数据整理”，等待结构化提取完成。
-5. 对照原图检查表格和不确定内容。
-6. 保留原始识别、采用 AI 建议，或手动输入最终值。
-7. 生成并下载 Excel。
+5. 对照原图检查 Extraction 表格和不确定内容。
+6. 如需进一步检查，可点击“运行 AI 数据检查”。该步骤会增加一次模型调用、等待时间和可能的费用。
+7. 查看高、中、低风险 findings。Validation 结果只是辅助提示，仍需人工判断。
+8. 保留原始识别、采用合适的 AI 建议，或手动输入最终值。
+9. 生成并下载 Excel。
 
 对于已验证的 80 样品横向四栏图片，可在高级设置中手动启用大图四栏预处理。该流程仍处于实验阶段，不适用于任意版式。
 
 ## Roadmap｜后续路线
 
-- **Validation**：把异常检查和 AI 建议从 Extraction 中分离，确保校验失败不影响原始观察数据。
+- **Validation 定位增强**：验证 finding 行号与字段绑定，并为无法定位的项目提供可追踪原因。
+- **Validation 质量评估**：建立脱敏人工标注集，统计有效发现率、误报率和跨次复现率。
 - **Anomaly Detection**：检查缺失值、重复记录、格式异常和明显异常值，所有判断均需可追溯。
 - **Variable Ordering**：允许用户定义实验变量层级与组合顺序。
 - **Unit Recognition**：识别图片中明确出现的单位，对缺失或推测单位单独标记并等待确认。
@@ -225,7 +297,14 @@ ARK_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
 
 - 手写、模糊、倾斜和高密度多栏记录仍可能出现字符或行对应错误。
 - 样品编号、小数字、正负号、单位和特殊符号尤其需要人工检查。
-- Extraction 提高了 JSON 输出稳定性，但尚未正式接入阶段2 AI 校验。
+- Extraction 与 Validation 已分为两个独立阶段；Validation 需要用户主动运行，并会产生额外模型调用。
+- Validation 只检查结构化结果，不重新查看图片，无法自行确认图片中的模糊字符。
+- Validation findings 存在随机波动，同一输入多次运行可能得到不同结果。
+- severity 和 confidence 是辅助信息，不代表 finding 已被证实。
+- Quality Filter 只优化展示，不提高模型本身的科研判断准确率。
+- 部分 finding 的行列位置仍可能处于“尚未验证”或“无法定位”状态。
+- Validation 日志当前存在于运行内存，不是长期审计数据库。
+- Validation 建议不会自动写入 final_value 或 Excel 主数据表。
 - API 调用速度取决于网络、模型服务和图片复杂度，单张图片可能需要几十秒。
 - 大图四栏预处理仅针对已验证版式，不是通用文档布局识别器。
 - 当前没有账户、数据库、支付、正式多用户部署或多模型自动路由。
