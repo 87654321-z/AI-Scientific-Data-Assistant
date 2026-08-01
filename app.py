@@ -25,7 +25,6 @@ selected_page = st.navigation(
         st.Page("pages/1_Data_Upload.py", title="数据导入"),
         st.Page("pages/2_OCR.py", title="OCR 识别"),
         st.Page("pages/3_Data_Processing.py", title="数据整理"),
-        st.Page("pages/4_Export.py", title="Excel 导出"),
         st.Page("pages/5_About.py", title="关于项目"),
         st.Page("pages/6_AI模型设置.py", title="AI 模型设置"),
     ]
