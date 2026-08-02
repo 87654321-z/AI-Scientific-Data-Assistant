@@ -40,7 +40,13 @@ class DoubaoValidationProvider(ValidationProvider):
     _SCOPES = {"cell", "row", "column", "global"}
     _CONFIDENCE_LEVELS = {"low", "medium", "high"}
     _SEVERITY_LEVELS = {"low", "medium", "high"}
-    _LOCATION_STATUSES = {"unvalidated", "resolved", "unresolved", "ambiguous"}
+    _LOCATION_STATUSES = {
+        "unvalidated",
+        "resolved",
+        "unresolved",
+        "ambiguous",
+        "unknown",
+    }
 
     def validate_result(
         self,

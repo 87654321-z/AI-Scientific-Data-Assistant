@@ -68,6 +68,13 @@ def build_validation_prompt(
 - 有合理候选值时放入 suggestions。
 - 没有合理候选但需要检查时放入 uncertain_items，suggested_value 为 null。
 - 不同单元格必须分别输出，不能合并。
+- 所有涉及某个具体实验数据的问题，都必须同时返回 row_index、column_name、observed_value、suggested_value、reason、confidence 和 location_status。
+- row_index 必须直接使用输入 observed_rows 中从 1 开始的 row_index；禁止改成数组下标或自行猜测行号。
+- column_name 必须逐字使用输入 columns 中的 internal_name；禁止使用中文显示名、简称或新造字段名。
+- observed_value 必须逐字复制对应行对应字段的输入值，不能改写或使用其他行的值。
+- 行号和字段名都能明确绑定时，location_status 必须为 resolved。
+- 无法可靠确定具体行号或字段名时，不得伪造位置；应将该问题写入 warnings。若仍输出 finding，则 row_index 和 column_name 必须为 null，location_status 必须为 unknown，且该项不会进入人工确认。
+- 不要为同一个无法定位的全局问题逐行生成 finding；使用一条简短 warning 即可。
 - reason 只写一句简短中文，不输出长篇推理。
 - issue_type 仅使用 missing_value、type_mismatch、identifier_pattern、unit_inconsistency、replicate_inconsistency、numeric_format、possible_outlier、unresolved_character、other。
 - scope 仅使用 cell、row、column、global。
@@ -86,7 +93,8 @@ def build_validation_prompt(
       "issue_type": "identifier_pattern",
       "reason": "一句简短中文原因",
       "suggested_value": "候选值",
-      "confidence": "low"
+      "confidence": "low",
+      "location_status": "resolved"
     }}
   ],
   "uncertain_items": []

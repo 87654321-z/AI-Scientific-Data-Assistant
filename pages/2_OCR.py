@@ -22,7 +22,8 @@ from core.numeric_format import (
 )
 from core.preprocessing.layout_detector import detect_large_image_layout
 from core.review_service import confirm_experiment_result
-from core.schemas import SourceFile
+from core.schemas import SourceFile, UncertainItem
+from core.validation_schemas import ValidationResult
 from core.scientific_notation import (
     format_scientific_identifier_display,
     identifier_structure_is_compatible,
@@ -34,6 +35,7 @@ from utils.validation_ui import (
     clear_validation_state,
     render_mock_validation_panel,
     render_validation_panel,
+    validation_state_keys,
 )
 
 
@@ -112,6 +114,77 @@ def parse_uncertain_item(content: str, reason: str) -> dict[str, str | None]:
         "target_type": optional_value(target_type_match) or "cell",
         "column_name": optional_value(column_name_match),
     }
+
+
+def build_unified_review_items(experiment_result, validation_result=None):
+    """合并旧不确定项和可定位 Validation finding，不修改任何原始结果。"""
+    review_items = list(experiment_result.uncertain_items)
+    if not isinstance(validation_result, ValidationResult):
+        return review_items
+
+    for finding in [*validation_result.suggestions, *validation_result.uncertain_items]:
+        if finding.row_index is None or not finding.column_name:
+            continue
+        content = (
+            "target_type=cell; "
+            f"column_name={finding.column_name}; "
+            f"observed_value={finding.observed_value if finding.observed_value is not None else 'null'}; "
+            f"suggested_value={finding.suggested_value if finding.suggested_value is not None else 'null'}; "
+            f"confidence={finding.confidence or 'low'}"
+        )
+        item = UncertainItem(
+            location=f"第{finding.row_index}行 {finding.column_name}",
+            content=content,
+            reason=finding.reason,
+        )
+        # 旧 Review 绑定器会优先读取这些明确位置；仅附加到 UI 临时对象。
+        item.row_index = finding.row_index
+        item.column_name = finding.column_name
+        item.validation_finding_id = finding.finding_id
+        review_items.append(item)
+    return review_items
+
+
+def group_review_candidates(candidates):
+    """按可确认目标合并 UI 卡片，同时把每条 finding 完整保留在卡片内。"""
+    grouped = []
+    positions = {}
+    for item, binding in candidates:
+        status = binding["status"]
+        if status == "resolved":
+            key = ("cell", binding["row_index"], binding["column_name"])
+        elif status == "field_resolved":
+            key = ("field", binding["column_name"], binding["field_attribute"])
+        else:
+            key = ("unresolved", len(grouped))
+
+        finding = {
+            "location": item.location,
+            "reason": binding.get("basis"),
+            "suggested_value": binding.get("suggested_value"),
+            "confidence": binding.get("confidence"),
+        }
+        if key not in positions:
+            grouped_binding = dict(binding)
+            grouped_binding["related_findings"] = [finding]
+            grouped_binding["suggested_values"] = []
+            positions[key] = len(grouped)
+            grouped.append([item, grouped_binding])
+        else:
+            grouped_binding = grouped[positions[key]][1]
+            grouped_binding["related_findings"].append(finding)
+
+        suggestion = binding.get("suggested_value")
+        suggestions = grouped_binding["suggested_values"]
+        if suggestion is not None and suggestion not in suggestions:
+            suggestions.append(suggestion)
+
+    review_items = []
+    for item_number, (item, binding) in enumerate(grouped, start=1):
+        suggestions = binding["suggested_values"]
+        binding["suggested_value"] = suggestions[0] if len(suggestions) == 1 else None
+        review_items.append((item_number, item, binding))
+    return review_items
 
 
 def format_user_value(value):
@@ -425,14 +498,23 @@ def build_display_dataframe(
         dataframe.insert(0, "序号", range(1, len(dataframe) + 1))
     # 重复信息只用于当前页面显示，不写入 treatment 等原始数据字段。
     replicate_labels = []
+    replicate_group_numbers = {}
+    replicate_group_counts = {}
     for source_row_index in source_row_indices:
         source_row = (
             doubao_result.rows[source_row_index]
             if source_row_index < len(doubao_result.rows)
             else None
         )
-        if source_row and source_row.replicate_group and source_row.replicate_index:
-            replicate_labels.append(f"重复{source_row.replicate_index}")
+        if source_row and source_row.replicate_group:
+            group = source_row.replicate_group
+            if group not in replicate_group_numbers:
+                replicate_group_numbers[group] = len(replicate_group_numbers) + 1
+                replicate_group_counts[group] = 0
+            replicate_group_counts[group] += 1
+            replicate_labels.append(
+                f"重复组{replicate_group_numbers[group]}·第{replicate_group_counts[group]}次"
+            )
         else:
             replicate_labels.append("")
     if any(replicate_labels):
@@ -566,15 +648,20 @@ def render_ai_result(doubao_result, image_id: str, timings: dict[str, float]) ->
 
     bindings_key = f"doubao_uncertain_bindings_{image_id}"
     bindings = {}
-    review_items = []
-    for item_number, item in enumerate(doubao_result.uncertain_items, start=1):
+    validation_keys = validation_state_keys(image_id)
+    validation_result = st.session_state.get(validation_keys["result"])
+    unified_items = build_unified_review_items(doubao_result, validation_result)
+    review_candidates = []
+    for item in unified_items:
         details = parse_uncertain_item(item.content, item.reason)
         binding = resolve_uncertain_binding(item, details, doubao_result)
-        bindings[str(item_number)] = binding
         if binding["status"] == "resolved":
             if binding["row_index"] in ignored_row_indices:
                 continue
-        review_items.append((item_number, item, binding))
+        review_candidates.append((item, binding))
+    review_items = group_review_candidates(review_candidates)
+    for item_number, _, binding in review_items:
+        bindings[str(item_number)] = binding
     st.session_state[bindings_key] = bindings
 
     total_uncertain = len(review_items)
@@ -649,6 +736,7 @@ def render_ai_result(doubao_result, image_id: str, timings: dict[str, float]) ->
                 st.markdown(f"**{log['stage']}**")
                 debug_fields = {
                     "模型": log.get("model"),
+                    "Prompt SHA-256": log.get("prompt_hash"),
                     "Prompt 长度": log.get("prompt_length"),
                     "图片大小（bytes）": log.get("image_size_bytes"),
                     "解析前 JSON 顶层字段": log.get("json_top_level_fields"),
@@ -659,6 +747,7 @@ def render_ai_result(doubao_result, image_id: str, timings: dict[str, float]) ->
                 }
                 if visible_debug_fields:
                     st.json(visible_debug_fields)
+                st.caption("原始 Extraction 响应完整内容：")
                 st.code(log["content"], language="json")
     with st.expander("查看字段技术信息", expanded=False):
         st.dataframe(pd.DataFrame([
@@ -687,7 +776,14 @@ def render_ai_result(doubao_result, image_id: str, timings: dict[str, float]) ->
                 column_name = binding["column_name"]
                 field_attribute = binding["field_attribute"]
                 original_value = binding["original_value"]
+                suggested_values = binding.get("suggested_values", [])
                 suggested_value = binding["suggested_value"]
+                if len(suggested_values) > 1:
+                    suggested_value = st.selectbox(
+                        "选择要采用的 AI 建议",
+                        options=suggested_values,
+                        key=f"field_suggestion_{image_id}_{item_number}",
+                    )
                 field_label = "字段名称" if field_attribute == "display_name" else "单位"
                 value_key = f"field:{column_name}:{field_attribute}"
                 final_value = confirmed_values.get(value_key, original_value)
@@ -696,6 +792,9 @@ def render_ai_result(doubao_result, image_id: str, timings: dict[str, float]) ->
                 information_columns[0].markdown(f"**原始识别值**  \n`{format_user_value(original_value) or '未能确认'}`")
                 information_columns[1].markdown(f"**AI 建议值**  \n`{format_user_value(suggested_value) or '没有建议'}`")
                 information_columns[2].markdown(f"**最终确认值**  \n`{format_user_value(final_value) or '未能确认'}`")
+                st.markdown("**发现：**")
+                for finding in binding.get("related_findings", []):
+                    st.write(f"- {translate_ai_text(finding['reason'])}")
                 with st.expander("查看 AI 辅助信息", expanded=False):
                     st.write(f"推测依据：{translate_ai_text(binding['basis'])}")
                     st.write(f"置信度：{binding['confidence'] or '未提供'}")
@@ -729,7 +828,14 @@ def render_ai_result(doubao_result, image_id: str, timings: dict[str, float]) ->
             column_index = binding["column_index"]
             column_name = binding["column_name"]
             original_value = binding["original_value"]
+            suggested_values = binding.get("suggested_values", [])
             suggested_value = binding["suggested_value"]
+            if len(suggested_values) > 1:
+                suggested_value = st.selectbox(
+                    "选择要采用的 AI 建议",
+                    options=suggested_values,
+                    key=f"suggestion_{image_id}_{item_number}",
+                )
             field_name = display_names[column_name]
             value_key = f"{row_index}:{column_name}"
             final_value = confirmed_values.get(value_key, original_value)
@@ -744,6 +850,9 @@ def render_ai_result(doubao_result, image_id: str, timings: dict[str, float]) ->
             information_columns[0].markdown(f"**原始识别值**  \n`{format_user_value(original_value) or '未能确认'}`")
             information_columns[1].markdown(f"**AI 建议值**  \n`{format_user_value(suggested_value) or '没有建议'}`")
             information_columns[2].markdown(f"**最终确认值**  \n`{format_user_value(final_value) or '未能确认'}`")
+            st.markdown("**发现：**")
+            for finding in binding.get("related_findings", []):
+                st.write(f"- {translate_ai_text(finding['reason'])}")
             st.caption(f"建议改动：{describe_difference(original_value, suggested_value)}")
             with st.expander("查看 AI 辅助信息", expanded=False):
                 st.write(f"推测依据：{translate_ai_text(binding['basis'])}")
