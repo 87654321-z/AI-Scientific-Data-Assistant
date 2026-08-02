@@ -2,8 +2,10 @@
 
 import difflib
 import re
+import subprocess
 import time
 from dataclasses import replace
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -26,11 +28,38 @@ from core.scientific_notation import (
     is_structured_identifier_field,
     normalize_scientific_identifier_storage,
 )
+from prompts.extraction_prompt import EXTRACTION_STAGE
 from utils.validation_ui import (
     clear_validation_state,
     render_mock_validation_panel,
     render_validation_panel,
 )
+
+
+def get_git_commit_hash() -> str:
+    """只读获取当前 Git 短哈希；部署环境无法读取时返回 unknown。"""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=Path(__file__).resolve().parents[1],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=3,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    return result.stdout.strip() or "unknown"
+
+
+def build_runtime_diagnostics(enable_preprocessing: bool) -> dict[str, str]:
+    """生成只读运行信息，不参与识别参数或结果处理。"""
+    return {
+        "Git commit": get_git_commit_hash(),
+        "当前 Provider": "doubao",
+        "当前 Extraction stage": EXTRACTION_STAGE,
+        "大图四栏预处理": "已开启" if enable_preprocessing else "未开启",
+    }
 
 
 @st.cache_resource(show_spinner=False)
@@ -947,6 +976,10 @@ else:
                 help="仅适用于已验证的80样品横向四栏图片；会在内存中旋正、切分四栏并分别调用模型。",
                 key=f"enable_preprocessing_{image_id}",
             )
+
+        with st.expander("运行诊断信息", expanded=False):
+            diagnostics = build_runtime_diagnostics(enable_preprocessing)
+            st.code("\n".join(f"{label}：{value}" for label, value in diagnostics.items()))
 
         doubao_key = f"doubao_result_{image_id}"
         if st.button("开始 AI 科研数据整理", type="primary", key=f"run_doubao_{image_id}"):
