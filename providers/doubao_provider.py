@@ -2,6 +2,7 @@
 
 import base64
 import json
+import os
 import re
 import time
 from copy import deepcopy
@@ -25,6 +26,8 @@ class DoubaoProvider(VisionProvider):
 
     name = "doubao"
     API_TIMEOUT_SECONDS = 180.0
+    DEBUG_ENV_NAME = "DOUBAO_EXTRACTION_DEBUG"
+    DEBUG_RESPONSE_SUMMARY_LENGTH = 500
 
     _EXPLANATORY_PLACEHOLDER = re.compile(
         r"\[[^\]]*\b(?:stylized|unclear|unknown|character|symbol)\b[^\]]*\]",
@@ -116,10 +119,26 @@ class DoubaoProvider(VisionProvider):
         keys = ("prompt_tokens", "completion_tokens", "total_tokens")
         return ", ".join(f"{key}={usage_data.get(key)}" for key in keys)
 
+    @classmethod
+    def _debug_diagnostics_enabled(cls) -> bool:
+        """只读取调试开关；默认关闭，不影响普通识别流程。"""
+        return os.getenv(cls.DEBUG_ENV_NAME, "").strip().lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _json_top_level_fields(content: str) -> str:
+        """只读提取解析前 JSON 顶层字段名，失败时返回 unavailable。"""
+        try:
+            data = json.loads(content)
+        except (json.JSONDecodeError, TypeError):
+            return "unavailable"
+        if not isinstance(data, dict):
+            return "non-object"
+        return ", ".join(str(key) for key in data) or "empty-object"
+
     @staticmethod
     def _response_log(stage: str, content: str, diagnostics: dict[str, str]) -> dict[str, str]:
         """构造可保存到 ExperimentResult 的响应日志，不包含 API Key。"""
-        return {
+        response_log = {
             "stage": stage,
             "content": content,
             "response_id": diagnostics.get("response_id", ""),
@@ -128,6 +147,16 @@ class DoubaoProvider(VisionProvider):
             "output_length": diagnostics.get("output_length", str(len(content))),
             "api_elapsed_seconds": diagnostics.get("api_elapsed_seconds", ""),
         }
+        for field_name in (
+            "model",
+            "prompt_length",
+            "image_size_bytes",
+            "raw_response_summary",
+            "json_top_level_fields",
+        ):
+            if field_name in diagnostics:
+                response_log[field_name] = diagnostics[field_name]
+        return response_log
 
     @staticmethod
     def _is_truncated_response(error: ValueError, diagnostics: dict[str, str]) -> bool:
@@ -232,6 +261,7 @@ class DoubaoProvider(VisionProvider):
             prompt = build_extraction_prompt(experiment_context)
         else:
             prompt = build_scientific_data_prompt(experiment_context)
+        debug_enabled = self._debug_diagnostics_enabled()
         client = OpenAI(
             base_url=base_url,
             api_key=api_key,
@@ -241,6 +271,13 @@ class DoubaoProvider(VisionProvider):
 
         try:
             first_diagnostics: dict[str, str] = {}
+            if debug_enabled:
+                first_diagnostics.update({
+                    "debug_enabled": "true",
+                    "model": model,
+                    "prompt_length": str(len(prompt)),
+                    "image_size_bytes": str(len(image.content)),
+                })
             content = self._request_vision_text(
                 client,
                 model,
@@ -260,10 +297,18 @@ class DoubaoProvider(VisionProvider):
                 if not hasattr(first_error, "raw_content"):
                     raise
                 retry_diagnostics: dict[str, str] = {}
+                retry_prompt = prompt + self._JSON_RETRY_INSTRUCTION
+                if debug_enabled:
+                    retry_diagnostics.update({
+                        "debug_enabled": "true",
+                        "model": model,
+                        "prompt_length": str(len(retry_prompt)),
+                        "image_size_bytes": str(len(image.content)),
+                    })
                 retry_content = self._request_vision_text(
                     client,
                     model,
-                    prompt + self._JSON_RETRY_INSTRUCTION,
+                    retry_prompt,
                     image.file_type,
                     image_base64,
                     retry_diagnostics,
@@ -356,6 +401,11 @@ class DoubaoProvider(VisionProvider):
                 "output_length": str(len(content)),
                 "api_elapsed_seconds": f"{elapsed_seconds:.3f}",
             })
+            if diagnostics.get("debug_enabled") == "true":
+                diagnostics.update({
+                    "raw_response_summary": content[: DoubaoProvider.DEBUG_RESPONSE_SUMMARY_LENGTH],
+                    "json_top_level_fields": DoubaoProvider._json_top_level_fields(content),
+                })
         return content
 
     def _add_validation_findings(

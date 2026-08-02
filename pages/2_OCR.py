@@ -647,6 +647,18 @@ def render_ai_result(doubao_result, image_id: str, timings: dict[str, float]) ->
             st.caption("仅当前运行可见；不会保存图片或写入项目目录。")
             for log in model_response_logs:
                 st.markdown(f"**{log['stage']}**")
+                debug_fields = {
+                    "模型": log.get("model"),
+                    "Prompt 长度": log.get("prompt_length"),
+                    "图片大小（bytes）": log.get("image_size_bytes"),
+                    "解析前 JSON 顶层字段": log.get("json_top_level_fields"),
+                    "原始响应摘要": log.get("raw_response_summary"),
+                }
+                visible_debug_fields = {
+                    label: value for label, value in debug_fields.items() if value is not None
+                }
+                if visible_debug_fields:
+                    st.json(visible_debug_fields)
                 st.code(log["content"], language="json")
     with st.expander("查看字段技术信息", expanded=False):
         st.dataframe(pd.DataFrame([
