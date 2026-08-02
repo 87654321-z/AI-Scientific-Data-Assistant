@@ -12,6 +12,7 @@ import pandas as pd
 import streamlit as st
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps, UnidentifiedImageError
 
+from config.ai_model_config import get_ai_model_config
 from core.excel_exporter import export_experiment_result_to_excel
 from core.experiment_parser import process_experiment_images
 from core.numeric_format import (
@@ -54,10 +55,12 @@ def get_git_commit_hash() -> str:
 
 def build_runtime_diagnostics(enable_preprocessing: bool) -> dict[str, str]:
     """生成只读运行信息，不参与识别参数或结果处理。"""
+    model_id = get_ai_model_config().model or "未配置"
     return {
         "Git commit": get_git_commit_hash(),
         "当前 Provider": "doubao",
         "当前 Extraction stage": EXTRACTION_STAGE,
+        "当前模型 ID": model_id,
         "大图四栏预处理": "已开启" if enable_preprocessing else "未开启",
     }
 

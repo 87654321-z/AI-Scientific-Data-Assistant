@@ -104,6 +104,10 @@ class DisplayDataframeTest(unittest.TestCase):
             "build_runtime_diagnostics",
             {
                 "get_git_commit_hash": lambda: "abc1234",
+                "get_ai_model_config": lambda: SimpleNamespace(
+                    model="doubao-test-model",
+                    api_key="must-not-be-displayed",
+                ),
                 "EXTRACTION_STAGE": "extraction",
             },
         )
@@ -113,7 +117,26 @@ class DisplayDataframeTest(unittest.TestCase):
         self.assertEqual(diagnostics["Git commit"], "abc1234")
         self.assertEqual(diagnostics["当前 Provider"], "doubao")
         self.assertEqual(diagnostics["当前 Extraction stage"], "extraction")
+        self.assertEqual(diagnostics["当前模型 ID"], "doubao-test-model")
         self.assertEqual(diagnostics["大图四栏预处理"], "已开启")
+        self.assertNotIn("API Key", diagnostics)
+        self.assertNotIn("must-not-be-displayed", diagnostics.values())
+
+    def test_runtime_diagnostics_show_unconfigured_model(self):
+        """未配置模型时只显示状态，不影响页面。"""
+        build_runtime_diagnostics = load_page_function(
+            "build_runtime_diagnostics",
+            {
+                "get_git_commit_hash": lambda: "abc1234",
+                "get_ai_model_config": lambda: SimpleNamespace(model=None),
+                "EXTRACTION_STAGE": "extraction",
+            },
+        )
+
+        diagnostics = build_runtime_diagnostics(False)
+
+        self.assertEqual(diagnostics["当前模型 ID"], "未配置")
+        self.assertEqual(diagnostics["大图四栏预处理"], "未开启")
 
     def test_git_hash_falls_back_to_unknown(self):
         """部署环境无法执行 Git 时不应影响页面。"""
