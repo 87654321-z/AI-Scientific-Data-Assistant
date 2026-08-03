@@ -20,7 +20,7 @@ def build_extraction_prompt(experiment_context: str | None = None) -> str:
 3. 字段按图片中的实际语义命名，可使用 sample_id、treatment_id、variable_name、measurement_value 及其他真实字段；不要限制字段数量或实验类型。禁止根据视觉位置创建 col1、column_group、left、right、desc、val、field1 等位置/占位字段。禁止使用 item_number、serial_number、row_number、sequence_number、entry_serial 等仅表示书写顺序的字段名；测量数据优先使用 measurement_value。
 4. 每条可见独立实验记录都必须输出一条 observed_rows，不得因区域复杂、模糊或看似重复而删除、合并或跳过。observed_rows 只保存图片直接可见内容：整个字段无法识别时写 null，局部字符模糊时写 `?` 或 `[模糊字符]`，不得猜测。
 5. 数值、单位与编号保持图片可见形式，不做单位换算或数学计算。measurement_value 若表现为数字，只能包含数字、小数点、正负号或 `?`；不得以 U、V、E、O 等字母代替不清楚的数字。
-6. Extraction 阶段不推断重复关系。replicate_group 和 replicate_index 默认填写 null，只有图片明确标注重复组或序号时才填写；无论是否重复，每一行仍独立保留完整可见内容。
+6. 【明确重复测量必须逐行展开】不得根据相似编号、实验规律或相邻行猜测重复关系。只有图片明确显示同一 treatment_id/sample_id 下存在多组平行测量值时，才视为重复测量：每一组同位置的测量值必须与相同的完整编号一起写成一条独立 observed_rows；禁止将多个重复值写成数组、列表或逗号分隔字符串，禁止使用 first_measurements、second_measurements 等汇总字段。例如同一编号下有三组平行测量值时，必须输出三行，而不是一行中压缩三个值。replicate_index 仅在这种图片明确可见的重复结构或明确标注的重复序号存在时，按图片顺序填写 1、2、3；否则 replicate_group 和 replicate_index 均为 null。无论是否重复，每一行仍独立保留完整可见内容。
 7. warnings 只使用简短提示，例如“存在模糊字符”或“可能存在漏行”，禁止长篇解释。
 
 只返回一个严格 JSON 对象，不要 Markdown，不要解释文字。格式：
