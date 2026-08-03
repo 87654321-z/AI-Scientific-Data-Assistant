@@ -1,6 +1,7 @@
 """火山方舟豆包视觉提供商。"""
 
 import base64
+import hashlib
 import json
 import os
 import re
@@ -10,6 +11,7 @@ from copy import deepcopy
 from openai import OpenAI
 
 from config.ai_model_config import get_ai_model_config
+from core.extraction_normalizer import normalize_extraction_payload
 from core.schemas import ColumnInfo, DataRow, ExperimentResult, SourceFile, UncertainItem
 from prompts.extraction_prompt import EXTRACTION_STAGE, build_extraction_prompt
 from prompts.local_region_pair_prompt import (
@@ -136,6 +138,24 @@ class DoubaoProvider(VisionProvider):
         return ", ".join(str(key) for key in data) or "empty-object"
 
     @staticmethod
+    def _request_diagnostics(
+        model: str,
+        base_url: str,
+        prompt: str,
+        image_content: bytes,
+    ) -> dict[str, str]:
+        """生成可比较的只读请求指纹，不保存图片或 API Key。"""
+        return {
+            "debug_enabled": "true",
+            "model": model,
+            "base_url": base_url,
+            "prompt_hash": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+            "prompt_length": str(len(prompt)),
+            "image_size_bytes": str(len(image_content)),
+            "messages_count": "1",
+        }
+
+    @staticmethod
     def _response_log(stage: str, content: str, diagnostics: dict[str, str]) -> dict[str, str]:
         """构造可保存到 ExperimentResult 的响应日志，不包含 API Key。"""
         response_log = {
@@ -149,8 +169,11 @@ class DoubaoProvider(VisionProvider):
         }
         for field_name in (
             "model",
+            "base_url",
+            "prompt_hash",
             "prompt_length",
             "image_size_bytes",
+            "messages_count",
             "raw_response_summary",
             "json_top_level_fields",
         ):
@@ -261,7 +284,7 @@ class DoubaoProvider(VisionProvider):
             prompt = build_extraction_prompt(experiment_context)
         else:
             prompt = build_scientific_data_prompt(experiment_context)
-        debug_enabled = self._debug_diagnostics_enabled()
+        capture_diagnostics = stage == EXTRACTION_STAGE or self._debug_diagnostics_enabled()
         client = OpenAI(
             base_url=base_url,
             api_key=api_key,
@@ -271,13 +294,10 @@ class DoubaoProvider(VisionProvider):
 
         try:
             first_diagnostics: dict[str, str] = {}
-            if debug_enabled:
-                first_diagnostics.update({
-                    "debug_enabled": "true",
-                    "model": model,
-                    "prompt_length": str(len(prompt)),
-                    "image_size_bytes": str(len(image.content)),
-                })
+            if capture_diagnostics:
+                first_diagnostics.update(
+                    self._request_diagnostics(model, base_url, prompt, image.content)
+                )
             content = self._request_vision_text(
                 client,
                 model,
@@ -286,11 +306,14 @@ class DoubaoProvider(VisionProvider):
                 image_base64,
                 first_diagnostics,
             )
-            parser = (
-                self._to_local_region_pair_result
-                if is_local_region_pair_mode
-                else self._to_experiment_result
-            )
+            if is_local_region_pair_mode:
+                parser = self._to_local_region_pair_result
+            else:
+                parser = lambda response_content, response_images: self._to_experiment_result(
+                    response_content,
+                    response_images,
+                    normalize_extraction=(stage == EXTRACTION_STAGE),
+                )
             try:
                 result = parser(content, images)
             except ValueError as first_error:
@@ -298,13 +321,15 @@ class DoubaoProvider(VisionProvider):
                     raise
                 retry_diagnostics: dict[str, str] = {}
                 retry_prompt = prompt + self._JSON_RETRY_INSTRUCTION
-                if debug_enabled:
-                    retry_diagnostics.update({
-                        "debug_enabled": "true",
-                        "model": model,
-                        "prompt_length": str(len(retry_prompt)),
-                        "image_size_bytes": str(len(image.content)),
-                    })
+                if capture_diagnostics:
+                    retry_diagnostics.update(
+                        self._request_diagnostics(
+                            model,
+                            base_url,
+                            retry_prompt,
+                            image.content,
+                        )
+                    )
                 retry_content = self._request_vision_text(
                     client,
                     model,
@@ -482,6 +507,8 @@ class DoubaoProvider(VisionProvider):
         self,
         content: str,
         images: list[SourceFile],
+        *,
+        normalize_extraction: bool = False,
     ) -> ExperimentResult:
         try:
             data = json.loads(content)
@@ -510,6 +537,9 @@ class DoubaoProvider(VisionProvider):
             # 仅供页面开发期诊断读取；不参与 JSON 解析或业务数据处理。
             diagnostic_error.raw_content = content
             raise diagnostic_error from error
+
+        if normalize_extraction:
+            data = normalize_extraction_payload(data)
 
         columns = [
             ColumnInfo(

@@ -12,7 +12,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.numeric_format import format_final_numeric_rows, normalize_decimal_separator_rows
-from core.schemas import UncertainItem
+from core.schemas import ColumnInfo, DataRow, ExperimentResult, UncertainItem
 from core.scientific_notation import (
     format_scientific_identifier_display,
     is_structured_identifier_field,
@@ -314,6 +314,36 @@ class DisplayDataframeTest(unittest.TestCase):
 
         self.assertEqual(diagnostics["当前模型 ID"], "未配置")
         self.assertEqual(diagnostics["大图四栏预处理"], "未开启")
+
+    def test_extraction_developer_snapshot_is_read_only_and_includes_replicates(self):
+        result = ExperimentResult(
+            source_files=[],
+            raw_text="",
+            rows=[
+                DataRow(
+                    values={"treatment_id": "S0/L/E+/N1"},
+                    field_sources={"treatment_id": "original"},
+                    replicate_group="S0/L/E+/N1",
+                    replicate_index=1,
+                )
+            ],
+            columns=[ColumnInfo("treatment_id", "处理编号", None, False, "original")],
+            ai_suggested_rows=[],
+            uncertain_items=[],
+            warnings=[],
+            provider="doubao",
+        )
+
+        build_snapshot = load_page_function(
+            "build_extraction_developer_snapshot",
+            {},
+        )
+        snapshot = build_snapshot(result)
+
+        self.assertEqual(snapshot["columns"][0]["internal_name"], "treatment_id")
+        self.assertEqual(snapshot["observed_rows_first_3"][0]["replicate_group"], "S0/L/E+/N1")
+        self.assertEqual(snapshot["observed_rows_first_3"][0]["replicate_index"], 1)
+        self.assertEqual(result.rows[0].values["treatment_id"], "S0/L/E+/N1")
 
     def test_git_hash_falls_back_to_unknown(self):
         """部署环境无法执行 Git 时不应影响页面。"""

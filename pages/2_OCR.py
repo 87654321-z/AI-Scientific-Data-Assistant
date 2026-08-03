@@ -67,6 +67,30 @@ def build_runtime_diagnostics(enable_preprocessing: bool) -> dict[str, str]:
     }
 
 
+def build_extraction_developer_snapshot(doubao_result) -> dict[str, object]:
+    """开发模式专用的解析后摘要，不改变 ExperimentResult。"""
+    first_rows = []
+    for row in doubao_result.rows[:3]:
+        first_rows.append({
+            "values": dict(row.values),
+            "replicate_group": row.replicate_group,
+            "replicate_index": row.replicate_index,
+        })
+    return {
+        "columns": [
+            {
+                "internal_name": column.internal_name,
+                "display_name": column.display_name,
+                "unit": column.unit,
+            }
+            for column in doubao_result.columns
+        ],
+        "observed_rows_first_3": first_rows,
+        "uncertain_items_count": len(doubao_result.uncertain_items),
+        "warnings": list(doubao_result.warnings),
+    }
+
+
 @st.cache_resource(show_spinner=False)
 def load_ocr_reader():
     """加载并缓存本地 EasyOCR 模型，避免每次点击都重新加载。"""
@@ -736,9 +760,11 @@ def render_ai_result(doubao_result, image_id: str, timings: dict[str, float]) ->
                 st.markdown(f"**{log['stage']}**")
                 debug_fields = {
                     "模型": log.get("model"),
+                    "Base URL": log.get("base_url"),
                     "Prompt SHA-256": log.get("prompt_hash"),
                     "Prompt 长度": log.get("prompt_length"),
                     "图片大小（bytes）": log.get("image_size_bytes"),
+                    "messages 数量": log.get("messages_count"),
                     "解析前 JSON 顶层字段": log.get("json_top_level_fields"),
                     "原始响应摘要": log.get("raw_response_summary"),
                 }
@@ -749,6 +775,8 @@ def render_ai_result(doubao_result, image_id: str, timings: dict[str, float]) ->
                     st.json(visible_debug_fields)
                 st.caption("原始 Extraction 响应完整内容：")
                 st.code(log["content"], language="json")
+            st.caption("原始响应解析后的结构摘要：")
+            st.json(build_extraction_developer_snapshot(doubao_result))
     with st.expander("查看字段技术信息", expanded=False):
         st.dataframe(pd.DataFrame([
             {"内部字段名": column.internal_name, "显示名称": column.display_name, "单位": column.unit or ""}
