@@ -46,12 +46,6 @@ class ExtractionNormalizerTests(unittest.TestCase):
             "experimental_identifier": "treatment_id",
             "treatment_code": "treatment_id",
             "sample_treatment_id": "treatment_id",
-            "measurement": "measurement_value",
-            "value": "measurement_value",
-            "val": "measurement_value",
-            "reading": "measurement_value",
-            "result": "measurement_value",
-            "numeric_value": "measurement_value",
         }
         payload = {
             "columns": [{"internal_name": alias} for alias in aliases],
@@ -73,6 +67,67 @@ class ExtractionNormalizerTests(unittest.TestCase):
                 normalized["observed_rows"][index],
                 {canonical_name: f"value-{index}"},
             )
+
+    def test_numeric_val1_and_value1_are_normalized(self):
+        for alias in ("val1", "value1"):
+            with self.subTest(alias=alias):
+                payload = {
+                    "columns": [{"internal_name": alias}],
+                    "observed_rows": [{alias: "0.532"}, {alias: "1.20"}],
+                    "warnings": [],
+                }
+
+                normalized = normalize_extraction_payload(payload)
+
+                self.assertEqual(
+                    normalized["columns"][0]["internal_name"], "measurement_value",
+                )
+                self.assertEqual(
+                    normalized["observed_rows"][0]["measurement_value"], "0.532",
+                )
+
+    def test_semantic_or_non_numeric_measurement_alias_is_not_renamed(self):
+        payload = {
+            "columns": [
+                {"internal_name": "variable_name"},
+                {"internal_name": "val1"},
+            ],
+            "observed_rows": [
+                {"variable_name": "株高", "val1": "high"},
+                {"variable_name": "鲜重", "val1": "low"},
+            ],
+            "warnings": [],
+        }
+
+        normalized = normalize_extraction_payload(payload)
+
+        self.assertEqual(
+            [column["internal_name"] for column in normalized["columns"]],
+            ["variable_name", "val1"],
+        )
+        self.assertEqual(normalized["observed_rows"], payload["observed_rows"])
+        self.assertIn(
+            "字段 val1 疑似测量值但内容并非主要为数字，已保留原字段，请人工确认。",
+            normalized["warnings"],
+        )
+
+    def test_multiple_numeric_measurement_aliases_are_preserved(self):
+        payload = {
+            "columns": [
+                {"internal_name": "measurement_left"},
+                {"internal_name": "measurement_right"},
+            ],
+            "observed_rows": [{"measurement_left": "0.532", "measurement_right": "1.20"}],
+            "warnings": [],
+        }
+
+        normalized = normalize_extraction_payload(payload)
+
+        self.assertEqual(
+            [column["internal_name"] for column in normalized["columns"]],
+            ["measurement_left", "measurement_right"],
+        )
+        self.assertIn("多个通用测量字段别名", normalized["warnings"][0])
 
     def test_order_fields_are_not_renamed(self):
         fields = [

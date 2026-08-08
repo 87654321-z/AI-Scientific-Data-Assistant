@@ -1,0 +1,12 @@
+# 首次真实 Benchmark 图片清单（相对项目根目录）。
+# 仅包含当前 test_images/ 中已有的本地真实图片，不包含历史报告或 CSV。
+test_images/微信图片_2026-07-24_125721_136.jpg
+test_images/微信图片_20260726111931_2_2.jpg
+test_images/微信图片_20260726111938_3_2.jpg
+test_images/微信图片_20260726112008_4_2.jpg
+test_images/微信图片_20260726112027_7_2.jpg
+test_images/微信图片_20260729144054_8_2 - 副本.jpg
+test_images/微信图片_20260731122956_12_2.jpg
+test_images/微信图片_20260731122957_13_2.jpg
+test_images/微信图片_20260731122958_14_2.jpg
+test_images/微信图片_20260731122958_15_2.jpg

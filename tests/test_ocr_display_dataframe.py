@@ -268,12 +268,17 @@ class DisplayDataframeTest(unittest.TestCase):
         self.assertEqual(dataframe.loc[0, "序号"], 1)
 
     def test_extraction_prompt_protects_identifier_symbols(self):
-        """Extraction Prompt 应明确保护编号前缀、符号和下标。"""
+        """Extraction Prompt 应保留编号整体、特殊符号和模糊字符保护能力。"""
         prompt = build_extraction_prompt()
 
-        self.assertIn("不得把 N\u2081 识别为 1", prompt)
-        self.assertIn("下标数字应尽量按图片中的形式保留", prompt)
-        self.assertIn("不得删除或改写 `/`、`-`、`+`", prompt)
+        # 只验证能力，不绑定某一版 Prompt 的中文句式。
+        self.assertIn("treatment_id", prompt)
+        self.assertIn("sample_id", prompt)
+        self.assertIn("不可拆分", prompt)
+        self.assertIn("原样保留", prompt)
+        self.assertRegex(prompt, r"不能变成.*`1`.*`I`.*`l`")
+        self.assertIn("[模糊字符]", prompt)
+        self.assertIn("自动纠错", prompt)
 
     def test_runtime_diagnostics_are_read_only_display_values(self):
         """诊断信息应准确反映固定阶段和当前预处理开关。"""

@@ -19,12 +19,6 @@ _FIELD_ALIASES = {
     "sample_code": "sample_id",
     "specimen_id": "sample_id",
     "sample_treatment_id": "treatment_id",
-    "measurement": "measurement_value",
-    "value": "measurement_value",
-    "val": "measurement_value",
-    "reading": "measurement_value",
-    "result": "measurement_value",
-    "numeric_value": "measurement_value",
 }
 
 _VISUAL_LAYOUT_FIELDS = {
@@ -40,6 +34,20 @@ _VISUAL_LAYOUT_FIELDS = {
 }
 
 _MEASUREMENT_LETTERS = re.compile(r"[UVEO]", re.IGNORECASE)
+_MEASUREMENT_ALIASES = {
+    "measurement",
+    "value",
+    "val",
+    "val1",
+    "value1",
+    "variable_value",
+    "numeric_value",
+    "reading",
+    "result",
+}
+_MEASUREMENT_PREFIX = "measurement_"
+_NUMBER_PATTERN = re.compile(r"^[+-]?(?:\d+(?:[.,]\d*)?|[.,]\d+)$")
+_NUMBER_LIKE_PATTERN = re.compile(r"^(?=.*\d)[0-9UVEO.,+-]+$", re.IGNORECASE)
 
 
 def normalize_extraction_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -51,10 +59,16 @@ def normalize_extraction_payload(payload: dict[str, Any]) -> dict[str, Any]:
     normalized = deepcopy(payload)
     warnings = _normalized_warnings(normalized.get("warnings"))
 
-    normalized["columns"] = _normalize_columns(normalized.get("columns"), warnings)
+    measurement_aliases = _measurement_alias_mapping(normalized, warnings)
+    normalized["columns"] = _normalize_columns(
+        normalized.get("columns"),
+        warnings,
+        measurement_aliases,
+    )
     normalized["observed_rows"] = _normalize_rows(
         normalized.get("observed_rows"),
         warnings,
+        measurement_aliases,
     )
     normalized["warnings"] = warnings
     return normalized
@@ -73,7 +87,98 @@ def _canonical_field_name(field_name: object) -> object:
     return _FIELD_ALIASES.get(field_name, field_name)
 
 
-def _normalize_columns(columns: object, warnings: list[str]) -> object:
+def _measurement_alias_mapping(payload: dict[str, Any], warnings: list[str]) -> dict[str, str]:
+    """安全识别一个可统一的通用测量字段。
+
+    多个数字列可能是不同实验指标，不能把它们都改成同一个字段；此时保持
+    原字段并提示人工确认。只处理单个、无 ``measurement_value`` 冲突的通用别名。
+    """
+    field_names = _payload_field_names(payload)
+    candidates = [name for name in field_names if _is_measurement_alias(name)]
+    if not candidates:
+        return {}
+
+    if "measurement_value" in field_names:
+        for name in candidates:
+            _append_warning_once(
+                warnings,
+                f"测量字段别名 {name} 与 measurement_value 同时存在，已保留原字段，请人工确认字段含义。",
+            )
+        return {}
+
+    if len(candidates) != 1:
+        _append_warning_once(
+            warnings,
+            "检测到多个通用测量字段别名，可能表示不同实验指标，已保留原字段，请人工确认字段含义。",
+        )
+        return {}
+
+    candidate = candidates[0]
+    values = _field_values(payload.get("observed_rows"), candidate)
+    if _values_are_mostly_numeric(values):
+        return {candidate: "measurement_value"}
+
+    _append_warning_once(
+        warnings,
+        f"字段 {candidate} 疑似测量值但内容并非主要为数字，已保留原字段，请人工确认。",
+    )
+    return {}
+
+
+def _payload_field_names(payload: dict[str, Any]) -> set[str]:
+    names: set[str] = set()
+    columns = payload.get("columns")
+    if isinstance(columns, list):
+        for column in columns:
+            if isinstance(column, dict) and isinstance(column.get("internal_name"), str):
+                names.add(column["internal_name"])
+    rows = payload.get("observed_rows")
+    if isinstance(rows, list):
+        for row in rows:
+            if isinstance(row, dict):
+                names.update(name for name in row if isinstance(name, str))
+    return names
+
+
+def _is_measurement_alias(field_name: str) -> bool:
+    return field_name in _MEASUREMENT_ALIASES or (
+        field_name.startswith(_MEASUREMENT_PREFIX)
+        and field_name != "measurement_value"
+    )
+
+
+def _field_values(rows: object, field_name: str) -> list[object]:
+    if not isinstance(rows, list):
+        return []
+    return [row[field_name] for row in rows if isinstance(row, dict) and field_name in row]
+
+
+def _values_are_mostly_numeric(values: list[object]) -> bool:
+    nonempty = [value for value in values if value is not None and str(value).strip()]
+    if not nonempty:
+        return False
+    numeric_count = sum(_is_numeric_or_number_like(value) for value in nonempty)
+    return numeric_count / len(nonempty) >= 0.8
+
+
+def _is_numeric_or_number_like(value: object) -> bool:
+    """只用于判断字段语义；U.532 仍会作为原始值保留并产生数据 warning。"""
+    if isinstance(value, (int, float)):
+        return True
+    if not isinstance(value, str):
+        return False
+    stripped = value.strip()
+    return bool(
+        _NUMBER_PATTERN.fullmatch(stripped)
+        or _NUMBER_LIKE_PATTERN.fullmatch(stripped)
+    )
+
+
+def _normalize_columns(
+    columns: object,
+    warnings: list[str],
+    measurement_aliases: dict[str, str],
+) -> object:
     if not isinstance(columns, list):
         return columns
 
@@ -84,7 +189,10 @@ def _normalize_columns(columns: object, warnings: list[str]) -> object:
             continue
         normalized_column = deepcopy(column)
         original_name = normalized_column.get("internal_name")
-        canonical_name = _canonical_field_name(original_name)
+        canonical_name = measurement_aliases.get(
+            original_name,
+            _canonical_field_name(original_name),
+        )
         if canonical_name != original_name:
             normalized_column["internal_name"] = canonical_name
         _add_visual_field_warning(canonical_name, warnings)
@@ -92,7 +200,11 @@ def _normalize_columns(columns: object, warnings: list[str]) -> object:
     return normalized_columns
 
 
-def _normalize_rows(rows: object, warnings: list[str]) -> object:
+def _normalize_rows(
+    rows: object,
+    warnings: list[str],
+    measurement_aliases: dict[str, str],
+) -> object:
     if not isinstance(rows, list):
         return rows
 
@@ -104,7 +216,10 @@ def _normalize_rows(rows: object, warnings: list[str]) -> object:
 
         normalized_row: dict[str, Any] = {}
         for field_name, value in row.items():
-            canonical_name = _canonical_field_name(field_name)
+            canonical_name = measurement_aliases.get(
+                field_name,
+                _canonical_field_name(field_name),
+            )
             # 已存在规范字段时保留该字段，避免别名覆盖真实模型输出。
             if canonical_name in normalized_row and canonical_name != field_name:
                 normalized_row[field_name] = value
