@@ -33,6 +33,26 @@
   --provider doubao --validation-provider doubao
 ```
 
+## 大规模运行与资源释放
+
+默认每批处理 10 张。每批结束后会清理 Python 临时对象并执行垃圾回收；Excel 检查使用系统临时目录，完成后自动释放。
+
+```powershell
+.\.venv\Scripts\python tests\benchmark\run_benchmark.py `
+  --manifest tests\benchmark\datasets\images_manifest.json --limit 10 `
+  --batch-size 10 --provider doubao --validation-provider doubao
+```
+
+默认会在运行结束后删除本次处理的 `tests/benchmark/datasets/images/` 托管下载图片及 `.part` 临时文件，但不会删除 `test_images/` 或其他手工传入的图片。报告 JSON/Markdown 与 Manifest 始终保留。
+
+只有需要复用下载图片时才加 `--keep-files`：
+
+```powershell
+.\.venv\Scripts\python tests\benchmark\run_benchmark.py `
+  --manifest tests\benchmark\datasets\images_manifest.json --limit 10 `
+  --batch-size 10 --keep-files
+```
+
 ## 报告内容
 
 每张图片都会记录：

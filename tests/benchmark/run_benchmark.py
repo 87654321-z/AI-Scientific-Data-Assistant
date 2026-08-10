@@ -7,11 +7,13 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import re
 import sys
 import tempfile
 import time
+import tracemalloc
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -19,6 +21,9 @@ from typing import Any
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+MANAGED_DATASET_IMAGES_ROOT = (
+    PROJECT_ROOT / "tests" / "benchmark" / "datasets" / "images"
+).resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.excel_exporter import export_experiment_result_to_excel
@@ -31,6 +36,11 @@ IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg"}
 VISUAL_FIELD_PATTERN = re.compile(
     r"^(?:col\d*|column\d*|column_group|column_label|layout_column|"
     r"left(?:_column)?|middle(?:_column)?|right(?:_column)?|desc|val|field\d*)$",
+    re.IGNORECASE,
+)
+NONSTANDARD_FIELD_PATTERN = re.compile(
+    r"^(?:var\d+|val\d+|value\d+|meas_?\d+|variable_\d+|"
+    r"(?:left|right|middle|red)_(?:serial|value)|.*_serial)$",
     re.IGNORECASE,
 )
 NUMBER_WITH_LETTER_PATTERN = re.compile(r"[UVEO]", re.IGNORECASE)
@@ -180,6 +190,7 @@ def benchmark_one_image(
     provider_name: str,
     validation_provider_name: str,
     enable_preprocessing: bool = False,
+    metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """运行一张图片的 Extraction、Validation 与 Excel 检查。"""
     record: dict[str, Any] = {
@@ -190,6 +201,12 @@ def benchmark_one_image(
         "review": {},
         "excel": {},
     }
+    if metadata:
+        record["dataset"] = {
+            key: metadata.get(key)
+            for key in ("source_url", "source_type", "license", "category", "notes")
+            if metadata.get(key) is not None
+        }
     try:
         source = source_file_from_path(image_path)
         extraction_started = time.perf_counter()
@@ -204,6 +221,11 @@ def benchmark_one_image(
             for column in result.columns
             if VISUAL_FIELD_PATTERN.match(column.internal_name)
         ]
+        naming_anomalies = [
+            column.internal_name
+            for column in result.columns
+            if NONSTANDARD_FIELD_PATTERN.match(column.internal_name)
+        ]
         split_rows = [
             row_number
             for row_number, row in enumerate(result.rows, start=1)
@@ -216,7 +238,14 @@ def benchmark_one_image(
             "columns": [column.internal_name for column in result.columns],
             "identifier_fields": identifier_field_summary(result),
             "visual_fields": visual_fields,
+            "field_naming_anomalies": naming_anomalies,
             "treatment_id_split_rows": split_rows,
+            "expected_row_count": metadata.get("expected_row_count") if metadata else None,
+            "row_count_delta": (
+                len(result.rows) - metadata["expected_row_count"]
+                if metadata and isinstance(metadata.get("expected_row_count"), int)
+                else None
+            ),
             "identifier_symbol_anomalies": identifier_symbol_anomalies(result),
             "numeric_letter_errors": numeric_letter_errors(result),
             "replicate": replicate_summary(result),
@@ -278,6 +307,7 @@ def build_summary(report: dict[str, Any]) -> dict[str, Any]:
         ]),
         "field_anomaly_count": sum(
             len(item["extraction"].get("visual_fields", []))
+            + len(item["extraction"].get("field_naming_anomalies", []))
             + len(item["extraction"].get("treatment_id_split_rows", []))
             for item in extraction_successes
         ),
@@ -320,6 +350,85 @@ def read_image_paths(arguments: argparse.Namespace) -> list[Path]:
     return unique
 
 
+def read_manifest_entries(manifest_path: str, limit: int | None) -> list[tuple[Path, dict[str, Any]]]:
+    """读取可扩展数据集清单；图片缺失时由主流程记录失败，不中止整个批次。"""
+    manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    entries = manifest.get("images", manifest) if isinstance(manifest, dict) else manifest
+    if not isinstance(entries, list):
+        raise ValueError("Manifest 必须是图片对象列表，或包含 images 列表的对象。")
+
+    resolved: list[tuple[Path, dict[str, Any]]] = []
+    for entry in entries:
+        if not isinstance(entry, dict) or not isinstance(entry.get("image_path"), str):
+            continue
+        image_path = Path(entry["image_path"])
+        if not image_path.is_absolute():
+            image_path = (PROJECT_ROOT / image_path).resolve()
+        resolved.append((image_path, entry))
+        if limit is not None and len(resolved) >= limit:
+            break
+    if not resolved:
+        raise ValueError("Manifest 中没有可用的 image_path。")
+    return resolved
+
+
+def iter_batches(
+    inputs: list[tuple[Path, dict[str, Any] | None]],
+    batch_size: int,
+):
+    """按固定批次产生输入，避免批量测试时长期保留图片对象引用。"""
+    for start in range(0, len(inputs), batch_size):
+        yield inputs[start:start + batch_size]
+
+
+def _is_managed_dataset_image(path: Path, managed_root: Path = MANAGED_DATASET_IMAGES_ROOT) -> bool:
+    try:
+        path.resolve().relative_to(managed_root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def cleanup_managed_files(
+    inputs: list[tuple[Path, dict[str, Any] | None]],
+    *,
+    keep_files: bool,
+    managed_root: Path = MANAGED_DATASET_IMAGES_ROOT,
+) -> dict[str, int | bool]:
+    """清理本次处理的 Benchmark 托管图片，不碰用户手工提供的图片路径。"""
+    managed_paths = {
+        path for path, metadata in inputs
+        if metadata is not None and _is_managed_dataset_image(path, managed_root)
+    }
+    partial_paths = set(managed_root.rglob("*.part")) if managed_root.is_dir() else set()
+    candidates = managed_paths | partial_paths
+    size_before = sum(path.stat().st_size for path in candidates if path.is_file())
+
+    if keep_files:
+        return {
+            "keep_files": True,
+            "managed_download_size_bytes": size_before,
+            "released_disk_bytes": 0,
+            "deleted_files": 0,
+        }
+
+    released = 0
+    deleted = 0
+    for path in candidates:
+        if not path.is_file():
+            continue
+        size = path.stat().st_size
+        path.unlink()
+        released += size
+        deleted += 1
+    return {
+        "keep_files": False,
+        "managed_download_size_bytes": size_before,
+        "released_disk_bytes": released,
+        "deleted_files": deleted,
+    }
+
+
 def report_markdown(report: dict[str, Any]) -> str:
     """生成适合人工查看的简短 Markdown 摘要。"""
     lines = [
@@ -336,6 +445,13 @@ def report_markdown(report: dict[str, Any]) -> str:
         f"- 平均识别行数：{report['summary']['average_row_count']}",
         f"- 字段异常次数：{report['summary']['field_anomaly_count']}",
         f"- 编号字符异常次数：{report['summary']['identifier_symbol_anomaly_count']}",
+        f"- Python 内存（开始 / 峰值 / 结束）："
+        f"{report['resources']['memory_before_bytes']} / "
+        f"{report['resources']['memory_peak_bytes']} / "
+        f"{report['resources']['memory_after_bytes']} bytes",
+        f"- 下载文件大小 / 已释放空间："
+        f"{report['resources']['managed_download_size_bytes']} / "
+        f"{report['resources']['released_disk_bytes']} bytes",
         "",
         "| 图片 | Extraction | 行数 | Validation findings | Excel |",
         "|---|---:|---:|---:|---:|",
@@ -360,6 +476,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="运行 AI 科研数据助手图片基准测试")
     parser.add_argument("images", nargs="*", help="一张或多张本地图片路径")
     parser.add_argument("--images-file", help="UTF-8 文本清单：每行一个图片路径")
+    parser.add_argument("--manifest", help="数据集 JSON 清单；只运行本地已下载图片")
+    parser.add_argument("--limit", type=int, help="限制本次从 manifest 读取的图片数量")
+    parser.add_argument("--batch-size", type=int, default=10, help="每批处理图片数，默认 10")
+    parser.add_argument("--keep-files", action="store_true", help="保留 Benchmark 托管下载图片；默认测试后清理")
     parser.add_argument("--provider", choices=["mock", "doubao"], default="mock")
     parser.add_argument("--validation-provider", choices=["mock", "doubao"], default="mock")
     parser.add_argument("--enable-preprocessing", action="store_true")
@@ -369,31 +489,61 @@ def main() -> None:
         help="JSON 与 Markdown 报告目录",
     )
     arguments = parser.parse_args()
-    paths = read_image_paths(arguments)
+    inputs = [(path, None) for path in read_image_paths(arguments)] if (
+        arguments.images or arguments.images_file
+    ) else []
+    if arguments.manifest:
+        inputs.extend(read_manifest_entries(arguments.manifest, arguments.limit))
+    if not inputs:
+        raise ValueError("请至少提供图片路径、--images-file 或 --manifest。")
+    if arguments.batch_size <= 0:
+        raise ValueError("--batch-size 必须大于 0。")
 
     results = []
-    for path in paths:
-        if not path.is_file():
-            results.append({
-                "filename": path.name,
-                "extraction": {"success": False, "error": "图片文件不存在"},
-                "validation": {"success": False},
-                "review": {},
-                "excel": {},
-            })
-            continue
-        results.append(benchmark_one_image(
-            path,
-            arguments.provider,
-            arguments.validation_provider,
-            arguments.enable_preprocessing,
-        ))
+    tracemalloc.start()
+    memory_before, _ = tracemalloc.get_traced_memory()
+    try:
+        for batch_number, batch in enumerate(iter_batches(inputs, arguments.batch_size), start=1):
+            for path, metadata in batch:
+                if not path.is_file():
+                    results.append({
+                        "filename": path.name,
+                        "extraction": {"success": False, "error": "图片文件不存在"},
+                        "validation": {"success": False},
+                        "review": {},
+                        "excel": {},
+                    })
+                    continue
+                results.append(benchmark_one_image(
+                    path,
+                    arguments.provider,
+                    arguments.validation_provider,
+                    arguments.enable_preprocessing,
+                    metadata,
+                ))
+            del batch
+            gc.collect()
+            print(f"已完成 batch {batch_number}，已释放 Python 临时对象。")
+        _, memory_peak = tracemalloc.get_traced_memory()
+    finally:
+        cleanup = cleanup_managed_files(inputs, keep_files=arguments.keep_files)
+        gc.collect()
+        memory_after, final_peak = tracemalloc.get_traced_memory()
+        memory_peak = max(locals().get("memory_peak", 0), final_peak)
+        tracemalloc.stop()
 
     report = {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "provider": arguments.provider,
         "validation_provider": arguments.validation_provider,
         "images": results,
+        "resources": {
+            "batch_size": arguments.batch_size,
+            "memory_before_bytes": memory_before,
+            "memory_peak_bytes": memory_peak,
+            "memory_after_bytes": memory_after,
+            **cleanup,
+        },
     }
     report["summary"] = build_summary(report)
     output_dir = Path(arguments.output_dir)

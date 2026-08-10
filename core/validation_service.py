@@ -1,6 +1,7 @@
 """平台无关的 Validation 主流程。"""
 
 from copy import deepcopy
+import re
 
 from core.schemas import ExperimentResult
 from core.validation_schemas import ValidationFinding, ValidationResult
@@ -21,6 +22,7 @@ def validate_experiment_result(
     )
     if _protected_data_snapshot(experiment_result) != before_validation:
         raise RuntimeError("Validation Provider 修改了只读的 Extraction 数据。")
+    _append_local_quality_findings(validation_result, experiment_result)
     return _normalize_findings(validation_result, experiment_result)
 
 
@@ -65,6 +67,94 @@ def _normalize_findings(
     validation_result.uncertain_items = normalize_list(validation_result.uncertain_items)
     validation_result.warnings = warnings
     return validation_result
+
+
+_IDENTIFIER_FIELD_PATTERN = re.compile(
+    r"(?:treatment|sample|experiment|identifier|processing|process|code)",
+    re.IGNORECASE,
+)
+_MEASUREMENT_FIELD_PATTERN = re.compile(
+    r"(?:measurement|measure|value|val|reading|result|numeric)",
+    re.IGNORECASE,
+)
+_NUMBER_TOKEN_PATTERN = re.compile(r"(?<![A-Za-z0-9_])[+-]?(?:\d+(?:[.]\d+)?|[.]\d+)(?![A-Za-z0-9_])")
+
+
+def _append_local_quality_findings(
+    validation_result: ValidationResult,
+    experiment_result: ExperimentResult,
+) -> None:
+    """Add deterministic, non-destructive validation findings.
+
+    These checks deliberately report only suspicious patterns.  They never
+    rewrite an observed value or provide a guessed replacement.
+    """
+    findings = validation_result.uncertain_items
+    finding_number = 1
+
+    for row_index, row in enumerate(experiment_result.rows, start=1):
+        observed_values = row.observed_values or row.values
+        for column_name, value in observed_values.items():
+            if not isinstance(value, str) or not value.strip():
+                continue
+
+            if _is_identifier_field(column_name) and _has_identifier_structure_issue(value):
+                findings.append(ValidationFinding(
+                    finding_id=f"local-identifier-structure-{finding_number:04d}",
+                    scope="cell",
+                    row_index=row_index,
+                    column_name=column_name,
+                    observed_value=value,
+                    issue_type="identifier_structure_check",
+                    reason="实验编号疑似存在分隔符缺失、竖线替代斜杠或片段粘连，请人工确认。",
+                    suggested_value=None,
+                    confidence="medium",
+                    severity="medium",
+                    location_status="resolved",
+                ))
+                finding_number += 1
+
+            if _is_measurement_field(column_name) and _has_compressed_measurements(value):
+                findings.append(ValidationFinding(
+                    finding_id=f"local-compressed-repeat-{finding_number:04d}",
+                    scope="cell",
+                    row_index=row_index,
+                    column_name=column_name,
+                    observed_value=value,
+                    issue_type="compressed_repeat_measurement_check",
+                    reason="检测到疑似多个重复测量值被压缩在同一单元格，请人工确认。",
+                    suggested_value=None,
+                    confidence="medium",
+                    severity="medium",
+                    location_status="resolved",
+                ))
+                finding_number += 1
+
+
+def _is_identifier_field(column_name: str) -> bool:
+    return bool(_IDENTIFIER_FIELD_PATTERN.search(column_name))
+
+
+def _is_measurement_field(column_name: str) -> bool:
+    return bool(_MEASUREMENT_FIELD_PATTERN.search(column_name))
+
+
+def _has_identifier_structure_issue(value: str) -> bool:
+    """Return true only for common, suspicious identifier-shape anomalies."""
+    compact = value.strip()
+    return any((
+        "|" in compact,
+        # Match a missing slash before N even when a handwritten/truncated
+        # identifier ends at N (for example ``E+1N`` or ``E-IN``).
+        bool(re.search(r"E[+-][1Il]?N(?:\d|$)", compact)),
+        bool(re.search(r"(?:^|/)[^/]*[1Il]E[+-]", compact)),
+        bool(re.search(r"/[1Il](?=(?:/|E[+-]|N\d|$))", compact)),
+    ))
+
+
+def _has_compressed_measurements(value: str) -> bool:
+    """Detect multiple numeric tokens in one measurement cell without splitting."""
+    return len(_NUMBER_TOKEN_PATTERN.findall(value)) >= 2
 
 
 def _has_valid_binding(

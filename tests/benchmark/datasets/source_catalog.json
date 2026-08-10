@@ -1,0 +1,49 @@
+{
+  "sources": [
+    {
+      "name": "SciGen-Figure",
+      "source_url": "https://huggingface.co/datasets/nhop/SciGen-Figure",
+      "source_type": "huggingface_dataset",
+      "license": "Apache-2.0 (dataset card declaration)",
+      "categories": ["printed_table", "scientific_record"],
+      "status": "active_download_source",
+      "notes": "首批 100 条 Manifest 使用此来源；科学论文表格，不是手写实验记录。"
+    },
+    {
+      "name": "PubTabNet",
+      "source_url": "https://huggingface.co/datasets/ajimeno/PubTabNet",
+      "source_type": "huggingface_dataset",
+      "license": "CDLA-Sharing-1.0 (dataset card declaration)",
+      "categories": ["printed_table", "multi_column"],
+      "status": "license_review_required",
+      "notes": "大规模科学论文表格候选；加入前应复核下游再分发要求。"
+    },
+    {
+      "name": "USGS Field Notebook media",
+      "source_url": "https://www.usgs.gov/media/images/field-notebook",
+      "source_type": "government_media",
+      "license": "Public Domain (media page declaration)",
+      "categories": ["scientific_record", "messy_handwriting"],
+      "status": "manual_curation_required",
+      "notes": "适合引入自然科学田野笔记；按单张媒体页保留来源和权利说明。"
+    },
+    {
+      "name": "Smithsonian Open Access Field Books",
+      "source_url": "https://naturalhistory.si.edu/education/teaching-resources/life-science/digitizing-nature-field-books-fossils",
+      "source_type": "institutional_open_access",
+      "license": "Verify per asset (Smithsonian Open Access)",
+      "categories": ["scientific_record", "messy_handwriting", "mixed_document"],
+      "status": "manual_curation_required",
+      "notes": "优先选择明确标为 Open Access 或 Public Domain 的单张资产。"
+    },
+    {
+      "name": "ScriptNet Handwritten Table",
+      "source_url": "https://readcoop.eu/wp-content/uploads/2018/12/D5.10_scriptnet_datasets.pdf",
+      "source_type": "research_dataset",
+      "license": "License not confirmed",
+      "categories": ["handwritten_table", "messy_handwriting", "multi_column"],
+      "status": "license_review_required",
+      "notes": "手写表格候选；在未确认原始下载条款前不得自动抓取或再分发。"
+    }
+  ]
+}

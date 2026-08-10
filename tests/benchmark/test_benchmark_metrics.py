@@ -6,6 +6,7 @@ import importlib.util
 import sys
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -29,6 +30,42 @@ def make_result(values: dict[str, object], *, replicate_index: int | None = None
 
 
 class BenchmarkMetricsTests(unittest.TestCase):
+    def test_cleanup_only_removes_managed_images_unless_keep_files(self):
+        with TemporaryDirectory() as directory:
+            managed_root = Path(directory) / "managed"
+            managed_root.mkdir()
+            managed_image = managed_root / "image.jpg"
+            managed_image.write_bytes(b"managed-image")
+            user_image = Path(directory) / "user.jpg"
+            user_image.write_bytes(b"user-image")
+
+            cleanup = benchmark_runner.cleanup_managed_files(
+                [(managed_image, {"source_type": "huggingface_dataset"}), (user_image, None)],
+                keep_files=False,
+                managed_root=managed_root,
+            )
+
+            self.assertFalse(managed_image.exists())
+            self.assertTrue(user_image.exists())
+            self.assertEqual(cleanup["deleted_files"], 1)
+            self.assertEqual(cleanup["released_disk_bytes"], len(b"managed-image"))
+
+    def test_keep_files_preserves_managed_images(self):
+        with TemporaryDirectory() as directory:
+            managed_root = Path(directory) / "managed"
+            managed_root.mkdir()
+            managed_image = managed_root / "image.jpg"
+            managed_image.write_bytes(b"managed-image")
+
+            cleanup = benchmark_runner.cleanup_managed_files(
+                [(managed_image, {"source_type": "huggingface_dataset"})],
+                keep_files=True,
+                managed_root=managed_root,
+            )
+
+            self.assertTrue(managed_image.exists())
+            self.assertTrue(cleanup["keep_files"])
+
     def test_identifier_anomaly_is_reported_without_modifying_value(self):
         result = make_result({"treatment_id": "S6/LIE+IN1"})
         anomalies = benchmark_runner.identifier_symbol_anomalies(result)
