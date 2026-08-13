@@ -159,19 +159,27 @@ def _render_validation_result(validation_result: ValidationResult) -> None:
     """使用 Quality Filter 分级显示，同时保留 Session State 中的原始结果。"""
     display_result = build_validation_ui_data(validation_result)
     summary = display_result.summary
-    low_count = len(_findings_by_severity(display_result, "low"))
-    folded_count = low_count + summary["limited_count"]
+    severity_rows = build_raw_severity_rows(validation_result)
+    high_rows = severity_rows["high"]
+    medium_rows = severity_rows["medium"]
+    low_rows = severity_rows["low"]
+    folded_count = len(medium_rows) + len(low_rows)
+    issue_type_count = len(summarize_finding_rows([
+        *high_rows,
+        *medium_rows,
+        *low_rows,
+    ]))
 
     summary_columns = st.columns(4)
     summary_columns[0].metric("原始发现", summary["raw_finding_count"])
-    summary_columns[1].metric("当前展示", summary["displayed_finding_count"])
-    summary_columns[2].metric("重复项", summary["duplicate_count"])
-    summary_columns[3].metric("折叠/限制", folded_count)
+    summary_columns[1].metric("直接展示", len(high_rows))
+    summary_columns[2].metric("问题类型", issue_type_count)
+    summary_columns[3].metric("中低风险折叠", folded_count)
 
-    if display_result.suppressed_findings:
+    if folded_count:
         st.caption(
-            f"共有 {len(display_result.suppressed_findings)} 条发现因重复或数量限制"
-            "未进入主展示列表，原始 Validation 结果仍完整保留。"
+            f"中、低风险的 {folded_count} 个位置按问题类型折叠；"
+            "所有原始 Validation findings 均完整保留。"
         )
 
     st.markdown("#### 警告")
@@ -180,10 +188,6 @@ def _render_validation_result(validation_result: ValidationResult) -> None:
             st.warning(warning)
     else:
         st.info("没有全局警告。")
-
-    high_rows = _findings_by_severity(display_result, "high")
-    medium_rows = _findings_by_severity(display_result, "medium")
-    low_rows = _findings_by_severity(display_result, "low")
 
     st.markdown("#### 高风险发现")
     if high_rows:
@@ -195,23 +199,21 @@ def _render_validation_result(validation_result: ValidationResult) -> None:
     else:
         st.info("没有高风险发现。")
 
-    st.markdown("#### 中风险发现")
-    if medium_rows:
-        st.dataframe(
-            pd.DataFrame(medium_rows),
-            width="stretch",
-            hide_index=True,
-        )
-    else:
-        st.info("没有中风险发现。")
+    with st.expander(
+        _finding_group_label("中风险发现", medium_rows),
+        expanded=False,
+    ):
+        if medium_rows:
+            _render_finding_group(medium_rows)
+        else:
+            st.info("没有中风险发现。")
 
-    with st.expander(f"低风险发现（{len(low_rows)}）", expanded=False):
+    with st.expander(
+        _finding_group_label("低风险发现", low_rows),
+        expanded=False,
+    ):
         if low_rows:
-            st.dataframe(
-                pd.DataFrame(low_rows),
-                width="stretch",
-                hide_index=True,
-            )
+            _render_finding_group(low_rows)
         else:
             st.info("没有低风险发现。")
 
@@ -221,6 +223,21 @@ def build_validation_ui_data(
 ) -> ValidationDisplayResult:
     """为 UI 构造副本结果，原始 ValidationResult 继续保存在 Session State。"""
     return build_validation_display_result(validation_result)
+
+
+def build_raw_severity_rows(
+    validation_result: ValidationResult,
+) -> dict[str, list[dict[str, object]]]:
+    """按 severity 读取完整 findings；仅用于分层展示，不删改原始结果。"""
+    result = {"high": [], "medium": [], "low": []}
+    for category, findings in (
+        ("AI 建议", validation_result.suggestions),
+        ("不确定项", validation_result.uncertain_items),
+    ):
+        for finding in findings:
+            severity = finding.severity if finding.severity in result else "medium"
+            result[severity].extend(_finding_rows([finding], category))
+    return result
 
 
 def _findings_by_severity(
@@ -260,6 +277,8 @@ def _finding_rows(
         "numeric_format": "数字格式可疑",
         "possible_outlier": "数值可能异常",
         "unresolved_character": "字符无法确认",
+        "identifier_structure_check": "实验编号结构可疑",
+        "compressed_repeat_measurement_check": "疑似重复测量值被压缩",
         "other": "其他需检查问题",
     }
     return [
@@ -279,3 +298,30 @@ def _finding_rows(
         }
         for finding in findings
     ]
+
+
+def summarize_finding_rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    """按问题类型汇总展示数量，不删除任何底层 finding。"""
+    summary: dict[str, int] = {}
+    for row in rows:
+        issue_name = str(row.get("问题类型") or "其他需检查问题")
+        summary[issue_name] = summary.get(issue_name, 0) + 1
+    return [
+        {"问题类型": issue_name, "影响位置数": count}
+        for issue_name, count in summary.items()
+    ]
+
+
+def _finding_group_label(title: str, rows: list[dict[str, object]]) -> str:
+    type_count = len(summarize_finding_rows(rows))
+    return f"{title}（{len(rows)} 个位置，{type_count} 类）"
+
+
+def _render_finding_group(rows: list[dict[str, object]]) -> None:
+    st.dataframe(
+        pd.DataFrame(summarize_finding_rows(rows)),
+        width="stretch",
+        hide_index=True,
+    )
+    with st.expander("查看具体位置", expanded=False):
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)

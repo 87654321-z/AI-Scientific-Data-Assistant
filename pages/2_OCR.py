@@ -23,6 +23,7 @@ from core.numeric_format import (
 from core.preprocessing.layout_detector import detect_large_image_layout
 from core.review_service import confirm_experiment_result
 from core.schemas import SourceFile, UncertainItem
+from core.validation_quality import build_validation_display_result
 from core.validation_schemas import ValidationResult
 from core.scientific_notation import (
     format_scientific_identifier_display,
@@ -146,7 +147,8 @@ def build_unified_review_items(experiment_result, validation_result=None):
     if not isinstance(validation_result, ValidationResult):
         return review_items
 
-    for finding in [*validation_result.suggestions, *validation_result.uncertain_items]:
+    display_result = build_validation_display_result(validation_result)
+    for finding in [*display_result.suggestions, *display_result.uncertain_items]:
         if finding.row_index is None or not finding.column_name:
             continue
         content = (

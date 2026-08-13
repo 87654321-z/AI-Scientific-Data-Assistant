@@ -10,10 +10,12 @@ from utils.validation_ui import (
     VALIDATION_NOT_RUN,
     VALIDATION_SUCCEEDED,
     build_validation_ui_data,
+    build_raw_severity_rows,
     clear_validation_state,
     get_validation_status,
     run_validation,
     run_mock_validation,
+    summarize_finding_rows,
     validation_state_keys,
 )
 
@@ -150,6 +152,67 @@ class ValidationUIStateTests(unittest.TestCase):
 
         self.assertEqual(get_validation_status(state, "image"), VALIDATION_NOT_RUN)
         self.assertIn("doubao_result_image", state)
+
+    def test_severity_groups_keep_all_findings_and_summarize_types(self):
+        """3 High + 20 Medium + 20 Low 应完整分层，且可按类型汇总。"""
+        findings = [
+            *[
+                ValidationFinding(
+                    finding_id=f"high-{index}", scope="cell", row_index=index,
+                    column_name="measurement", observed_value=None,
+                    issue_type="missing_value", reason="关键值缺失",
+                    confidence="high", severity="high", location_status="resolved",
+                )
+                for index in range(1, 4)
+            ],
+            *[
+                ValidationFinding(
+                    finding_id=f"medium-{index}", scope="cell", row_index=index,
+                    column_name="treatment_id", observed_value="S0/L1E+1N2",
+                    issue_type="identifier_structure_check", reason="编号结构可疑",
+                    confidence="medium", severity="medium", location_status="resolved",
+                )
+                for index in range(1, 21)
+            ],
+            *[
+                ValidationFinding(
+                    finding_id=f"low-{index}", scope="cell", row_index=index,
+                    column_name="measurement", observed_value="0.?",
+                    issue_type="unresolved_character", reason="字符模糊",
+                    confidence="low", severity="low", location_status="resolved",
+                )
+                for index in range(1, 21)
+            ],
+        ]
+        validation = ValidationResult(uncertain_items=findings)
+
+        grouped = build_raw_severity_rows(validation)
+        summary = summarize_finding_rows(grouped["medium"])
+
+        self.assertEqual(len(grouped["high"]), 3)
+        self.assertEqual(len(grouped["medium"]), 20)
+        self.assertEqual(len(grouped["low"]), 20)
+        self.assertEqual(summary, [{"问题类型": "实验编号结构可疑", "影响位置数": 20}])
+        self.assertEqual(len(validation.uncertain_items), 43)
+
+    def test_49_identifier_findings_are_one_display_type_without_deletion(self):
+        findings = [
+            ValidationFinding(
+                finding_id=f"identifier-{index}", scope="cell", row_index=index,
+                column_name="treatment_id", observed_value="S0/L1E+1N2",
+                issue_type="identifier_structure_check", reason="编号结构可疑",
+                confidence="medium", severity="medium", location_status="resolved",
+            )
+            for index in range(1, 50)
+        ]
+        validation = ValidationResult(uncertain_items=findings)
+
+        grouped = build_raw_severity_rows(validation)
+        summary = summarize_finding_rows(grouped["medium"])
+
+        self.assertEqual(len(grouped["medium"]), 49)
+        self.assertEqual(summary, [{"问题类型": "实验编号结构可疑", "影响位置数": 49}])
+        self.assertEqual(len(validation.uncertain_items), 49)
 
 
 if __name__ == "__main__":

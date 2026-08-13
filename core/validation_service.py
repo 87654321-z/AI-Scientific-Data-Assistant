@@ -50,6 +50,7 @@ def _normalize_findings(
     def normalize_list(findings: list[ValidationFinding]) -> list[ValidationFinding]:
         normalized = []
         for finding in findings:
+            _calibrate_finding_classification(finding)
             if not _has_valid_binding(finding, row_count, valid_columns):
                 warnings.append(
                     f"校验项 {finding.finding_id} 无法定位到有效行列，请人工检查。"
@@ -67,6 +68,31 @@ def _normalize_findings(
     validation_result.uncertain_items = normalize_list(validation_result.uncertain_items)
     validation_result.warnings = warnings
     return validation_result
+
+
+_CLASSIFICATION_LEVELS = {"low", "medium", "high"}
+_HEURISTIC_FINDING_TYPES = {
+    "identifier_pattern",
+    "identifier_structure_check",
+    "compressed_repeat_measurement_check",
+    "possible_outlier",
+}
+
+
+def _calibrate_finding_classification(finding: ValidationFinding) -> None:
+    """区分问题影响程度与判断把握度，并约束仅凭结构推断的发现。"""
+    if finding.severity not in _CLASSIFICATION_LEVELS:
+        finding.severity = "medium"
+    if finding.confidence not in _CLASSIFICATION_LEVELS:
+        finding.confidence = "low"
+
+    # Validation 只读取 Extraction 文本，不查看原图。这些启发式类型可以较有
+    # 把握地指出“值得检查”，但不能高置信度断定原图字符或正确替代值。
+    if finding.issue_type in _HEURISTIC_FINDING_TYPES:
+        if finding.severity == "high":
+            finding.severity = "medium"
+        if finding.confidence == "high":
+            finding.confidence = "medium"
 
 
 _IDENTIFIER_FIELD_PATTERN = re.compile(

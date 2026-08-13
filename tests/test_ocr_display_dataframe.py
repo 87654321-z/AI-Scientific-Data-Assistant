@@ -17,6 +17,7 @@ from core.scientific_notation import (
     format_scientific_identifier_display,
     is_structured_identifier_field,
 )
+from core.validation_quality import build_validation_display_result
 from core.validation_schemas import ValidationFinding, ValidationResult
 from prompts.extraction_prompt import build_extraction_prompt
 
@@ -63,6 +64,7 @@ class DisplayDataframeTest(unittest.TestCase):
             {
                 "ValidationResult": ValidationResult,
                 "UncertainItem": UncertainItem,
+                "build_validation_display_result": build_validation_display_result,
             },
         )
         legacy_item = UncertainItem("第1行 编号", "legacy", "旧不确定项")
@@ -188,6 +190,7 @@ class DisplayDataframeTest(unittest.TestCase):
             {
                 "ValidationResult": ValidationResult,
                 "UncertainItem": UncertainItem,
+                "build_validation_display_result": build_validation_display_result,
             },
         )
         finding = ValidationFinding(
@@ -207,6 +210,45 @@ class DisplayDataframeTest(unittest.TestCase):
 
         self.assertEqual(review_items, [])
         self.assertEqual(validation_result.uncertain_items, [finding])
+
+    def test_review_keeps_all_high_but_prioritizes_medium_and_low(self):
+        """Review 不设 High 总上限；Medium/Low 使用既有优先级筛选。"""
+        build_unified_review_items = load_page_function(
+            "build_unified_review_items",
+            {
+                "ValidationResult": ValidationResult,
+                "UncertainItem": UncertainItem,
+                "build_validation_display_result": build_validation_display_result,
+            },
+        )
+
+        def finding(identifier, severity, row_index):
+            return ValidationFinding(
+                finding_id=identifier,
+                scope="cell",
+                row_index=row_index,
+                column_name="measurement",
+                observed_value=str(row_index),
+                issue_type="missing_value",
+                reason=identifier,
+                confidence="high",
+                severity=severity,
+                location_status="resolved",
+            )
+
+        findings = [
+            *[finding(f"high-{index}", "high", index) for index in range(1, 12)],
+            *[finding(f"medium-{index}", "medium", index + 20) for index in range(1, 21)],
+            *[finding(f"low-{index}", "low", index + 50) for index in range(1, 21)],
+        ]
+        validation = ValidationResult(uncertain_items=findings)
+
+        review_items = build_unified_review_items(
+            SimpleNamespace(uncertain_items=[]), validation
+        )
+
+        self.assertEqual(len(review_items), 11 + 8 + 4)
+        self.assertEqual(len(validation.uncertain_items), 51)
 
     def test_replicate_display_uses_group_and_local_sequence(self):
         """模型即使返回 11/12/13，显示层也应展示同组的第1/2/3次。"""

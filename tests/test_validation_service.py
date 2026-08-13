@@ -3,6 +3,7 @@
 import inspect
 import unittest
 from copy import deepcopy
+from unittest.mock import patch
 
 from core.experiment_parser import process_experiment_images
 from core.schemas import ColumnInfo, DataRow, ExperimentResult, SourceFile
@@ -44,6 +45,65 @@ def make_result() -> ExperimentResult:
 
 
 class ValidationServiceTests(unittest.TestCase):
+    def test_heuristic_findings_cannot_be_promoted_to_high(self):
+        experiment_result = make_result()
+
+        class HeuristicHighProvider:
+            def validate_result(self, result, context):
+                del result, context
+                return ValidationResult(uncertain_items=[ValidationFinding(
+                    finding_id="heuristic-high",
+                    scope="cell",
+                    row_index=1,
+                    column_name="treatment_id",
+                    observed_value="S0/L1E+1N2",
+                    issue_type="identifier_pattern",
+                    reason="编号结构可疑",
+                    confidence="high",
+                    severity="high",
+                    location_status="resolved",
+                )])
+
+        with patch(
+            "core.validation_service.create_validation_provider",
+            return_value=HeuristicHighProvider(),
+        ):
+            validation = validate_experiment_result(experiment_result, "doubao")
+
+        finding = validation.uncertain_items[0]
+        self.assertEqual(finding.severity, "medium")
+        self.assertEqual(finding.confidence, "medium")
+        self.assertEqual(finding.location_status, "resolved")
+
+    def test_distinct_high_findings_remain_high(self):
+        experiment_result = make_result()
+
+        class HighProvider:
+            def validate_result(self, result, context):
+                del result, context
+                return ValidationResult(uncertain_items=[
+                    ValidationFinding(
+                        finding_id=f"high-{index}",
+                        scope="cell",
+                        row_index=1,
+                        column_name="measurement",
+                        observed_value=None,
+                        issue_type="missing_value",
+                        reason=f"关键测量值缺失 {index}",
+                        confidence="high",
+                        severity="high",
+                        location_status="resolved",
+                    )
+                    for index in range(1, 4)
+                ])
+
+        with patch(
+            "core.validation_service.create_validation_provider",
+            return_value=HighProvider(),
+        ):
+            validation = validate_experiment_result(experiment_result, "doubao")
+
+        self.assertEqual([item.severity for item in validation.uncertain_items], ["high"] * 3)
     def test_identifier_structure_issue_is_reported_without_changing_source_data(self):
         experiment_result = make_result()
         experiment_result.rows[0].values["treatment_id"] = "S0/L/E+1N2"
