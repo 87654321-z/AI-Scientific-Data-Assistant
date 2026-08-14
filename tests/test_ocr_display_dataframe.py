@@ -183,6 +183,66 @@ class DisplayDataframeTest(unittest.TestCase):
         self.assertEqual(validation_result.suggestions, findings)
         self.assertEqual(len(validation_result.suggestions), 3)
 
+    def test_validation_keeps_all_same_cell_findings_while_review_groups_them(self):
+        """Validation 可查看同单元格全部 finding，Review 仅合并为一个操作目标。"""
+        build_unified_review_items = load_page_function(
+            "build_unified_review_items",
+            {
+                "ValidationResult": ValidationResult,
+                "UncertainItem": UncertainItem,
+                "build_validation_display_result": build_validation_display_result,
+            },
+        )
+        group_review_candidates = load_page_function("group_review_candidates", {})
+        findings = [
+            ValidationFinding(
+                finding_id=f"same-cell-{index}",
+                scope="cell",
+                row_index=5,
+                column_name="treatment_id",
+                observed_value="S0/L1E+1N2",
+                issue_type=issue_type,
+                reason=f"发现{index}",
+                suggested_value=None,
+                confidence="medium",
+                severity="medium",
+                location_status="resolved",
+            )
+            for index, issue_type in enumerate(
+                ("identifier_structure_check", "identifier_pattern", "unresolved_character"),
+                start=1,
+            )
+        ]
+        validation = ValidationResult(uncertain_items=findings)
+
+        unified = build_unified_review_items(
+            SimpleNamespace(uncertain_items=[]),
+            validation,
+        )
+        candidates = [
+            (
+                item,
+                {
+                    "status": "resolved",
+                    "row_index": item.row_index - 1,
+                    "column_name": item.column_name,
+                    "column_index": 0,
+                    "field_attribute": None,
+                    "original_value": "S0/L1E+1N2",
+                    "suggested_value": None,
+                    "basis": item.reason,
+                    "confidence": "medium",
+                },
+            )
+            for item in unified
+        ]
+        review_items = group_review_candidates(candidates)
+
+        self.assertEqual(len(validation.uncertain_items), 3)
+        self.assertEqual(len(unified), 3)
+        self.assertEqual(len(review_items), 1)
+        self.assertEqual(len(review_items[0][2]["related_findings"]), 3)
+
     def test_unlocated_validation_finding_does_not_enter_review(self):
         """缺少明确行列的 finding 仍留在 Validation 原结果中，不冒充可确认项。"""
         build_unified_review_items = load_page_function(
@@ -211,8 +271,8 @@ class DisplayDataframeTest(unittest.TestCase):
         self.assertEqual(review_items, [])
         self.assertEqual(validation_result.uncertain_items, [finding])
 
-    def test_review_keeps_all_high_but_prioritizes_medium_and_low(self):
-        """Review 不设 High 总上限；Medium/Low 使用既有优先级筛选。"""
+    def test_review_has_no_severity_count_limit(self):
+        """Review 不按 severity 截断；后续仅按可操作单元格合并。"""
         build_unified_review_items = load_page_function(
             "build_unified_review_items",
             {
@@ -247,7 +307,7 @@ class DisplayDataframeTest(unittest.TestCase):
             SimpleNamespace(uncertain_items=[]), validation
         )
 
-        self.assertEqual(len(review_items), 11 + 8 + 4)
+        self.assertEqual(len(review_items), 11 + 20 + 20)
         self.assertEqual(len(validation.uncertain_items), 51)
 
     def test_replicate_display_uses_group_and_local_sequence(self):

@@ -11,6 +11,7 @@ from utils.validation_ui import (
     VALIDATION_SUCCEEDED,
     build_validation_ui_data,
     build_raw_severity_rows,
+    _finding_group_label,
     clear_validation_state,
     get_validation_status,
     run_validation,
@@ -187,11 +188,15 @@ class ValidationUIStateTests(unittest.TestCase):
         validation = ValidationResult(uncertain_items=findings)
 
         grouped = build_raw_severity_rows(validation)
+        display = build_validation_ui_data(validation)
         summary = summarize_finding_rows(grouped["medium"])
 
         self.assertEqual(len(grouped["high"]), 3)
         self.assertEqual(len(grouped["medium"]), 20)
         self.assertEqual(len(grouped["low"]), 20)
+        self.assertEqual(display.summary["displayed_finding_count"], 43)
+        self.assertEqual(len(display.uncertain_items), 43)
+        self.assertEqual(display.suppressed_findings, [])
         self.assertEqual(summary, [{"问题类型": "实验编号结构可疑", "影响位置数": 20}])
         self.assertEqual(len(validation.uncertain_items), 43)
 
@@ -208,10 +213,17 @@ class ValidationUIStateTests(unittest.TestCase):
         validation = ValidationResult(uncertain_items=findings)
 
         grouped = build_raw_severity_rows(validation)
+        display = build_validation_ui_data(validation)
         summary = summarize_finding_rows(grouped["medium"])
 
         self.assertEqual(len(grouped["medium"]), 49)
+        self.assertEqual(len(display.uncertain_items), 49)
+        self.assertEqual(display.suppressed_findings, [])
         self.assertEqual(summary, [{"问题类型": "实验编号结构可疑", "影响位置数": 49}])
+        self.assertEqual(
+            _finding_group_label("中风险发现", grouped["medium"]),
+            "中风险发现（49 个位置，1 类）",
+        )
         self.assertEqual(len(validation.uncertain_items), 49)
 
 

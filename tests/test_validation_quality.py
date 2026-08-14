@@ -70,45 +70,35 @@ class ValidationQualityTests(unittest.TestCase):
         )
         self.assertEqual(display.suppressed_findings[0].reason, "duplicate")
 
-    def test_medium_and_low_limits_are_applied(self):
+    def test_all_medium_and_low_findings_are_retained(self):
         result = ValidationResult(uncertain_items=[
             *[
                 finding(f"medium-{index}", row_index=index)
-                for index in range(1, 5)
+                for index in range(1, 21)
             ],
             *[
-                finding(f"low-{index}", severity="low", row_index=index + 10)
-                for index in range(1, 4)
+                finding(f"low-{index}", severity="low", row_index=index + 100)
+                for index in range(1, 21)
             ],
         ])
 
-        display = build_validation_display_result(
-            result,
-            medium_limit=2,
-            low_limit=1,
-        )
+        display = build_validation_display_result(result)
 
-        self.assertEqual(display.summary["displayed_finding_count"], 3)
-        self.assertEqual(display.summary["limited_count"], 4)
-        self.assertEqual(
-            {item.reason for item in display.suppressed_findings},
-            {"medium_limit", "low_limit"},
-        )
+        self.assertEqual(display.summary["displayed_finding_count"], 40)
+        self.assertEqual(len(display.uncertain_items), 40)
+        self.assertEqual(display.suppressed_findings, [])
+        self.assertNotIn("limited_count", display.summary)
 
-    def test_all_high_findings_are_retained_even_when_limits_are_zero(self):
+    def test_all_high_findings_are_retained_without_a_global_limit(self):
         result = ValidationResult(uncertain_items=[
             finding(f"high-{index}", severity="high", row_index=index)
-            for index in range(1, 16)
+            for index in range(1, 31)
         ])
 
-        display = build_validation_display_result(
-            result,
-            medium_limit=0,
-            low_limit=0,
-        )
+        display = build_validation_display_result(result)
 
-        self.assertEqual(len(display.uncertain_items), 15)
-        self.assertEqual(display.summary["limited_count"], 0)
+        self.assertEqual(len(display.uncertain_items), 30)
+        self.assertEqual(display.summary["displayed_finding_count"], 30)
 
     def test_unlocated_finding_is_retained_and_marked(self):
         result = ValidationResult(uncertain_items=[finding(
@@ -146,11 +136,6 @@ class ValidationQualityTests(unittest.TestCase):
         self.assertEqual(result.uncertain_items[0].severity, "invalid")
         self.assertEqual(display.uncertain_items[0].severity, "medium")
         self.assertEqual(display.warnings, ["重复提醒"])
-
-    def test_negative_limits_are_rejected(self):
-        with self.assertRaises(ValueError):
-            build_validation_display_result(ValidationResult(), medium_limit=-1)
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -16,7 +16,7 @@ class SuppressedFinding:
 
     finding: ValidationFinding
     category: FindingCategory
-    reason: Literal["duplicate", "medium_limit", "low_limit"]
+    reason: Literal["duplicate"]
 
 
 @dataclass
@@ -50,14 +50,8 @@ _LOCATION_RANK = {
 
 def build_validation_display_result(
     validation_result: ValidationResult,
-    *,
-    medium_limit: int = 8,
-    low_limit: int = 4,
 ) -> ValidationDisplayResult:
-    """去重、排序和限量，同时保证输入 ValidationResult 不被修改。"""
-    if medium_limit < 0 or low_limit < 0:
-        raise ValueError("finding 数量限制不能小于 0。")
-
+    """去重并排序，同时保证输入 ValidationResult 不被修改。"""
     tagged = [
         *(
             _TaggedFinding(deepcopy(finding), "suggestion")
@@ -73,25 +67,21 @@ def build_validation_display_result(
 
     tagged.sort(key=_sort_key)
     unique, duplicates = _deduplicate(tagged)
-    retained, limited = _apply_limits(unique, medium_limit, low_limit)
-    retained.sort(key=_sort_key)
+    unique.sort(key=_sort_key)
 
     suggestions = [
-        item.finding for item in retained if item.category == "suggestion"
+        item.finding for item in unique if item.category == "suggestion"
     ]
     uncertain_items = [
-        item.finding for item in retained if item.category == "uncertain_item"
+        item.finding for item in unique if item.category == "uncertain_item"
     ]
     suppressed = [
-        *(
-            SuppressedFinding(item.finding, item.category, "duplicate")
-            for item in duplicates
-        ),
-        *limited,
+        SuppressedFinding(item.finding, item.category, "duplicate")
+        for item in duplicates
     ]
     unresolved_count = sum(
         item.finding.location_status in {"ambiguous", "unresolved"}
-        for item in retained
+        for item in unique
     )
     return ValidationDisplayResult(
         warnings=_deduplicate_warnings(validation_result.warnings),
@@ -101,9 +91,8 @@ def build_validation_display_result(
         summary={
             "raw_finding_count": len(tagged),
             "deduplicated_finding_count": len(unique),
-            "displayed_finding_count": len(retained),
+            "displayed_finding_count": len(unique),
             "duplicate_count": len(duplicates),
-            "limited_count": len(limited),
             "unresolved_location_count": unresolved_count,
         },
     )
@@ -160,31 +149,6 @@ def _deduplication_key(finding: ValidationFinding) -> tuple[object, ...]:
         finding.column_name,
         _normalized_text(finding.reason),
     )
-
-
-def _apply_limits(
-    findings: list[_TaggedFinding],
-    medium_limit: int,
-    low_limit: int,
-) -> tuple[list[_TaggedFinding], list[SuppressedFinding]]:
-    retained: list[_TaggedFinding] = []
-    limited: list[SuppressedFinding] = []
-    medium_count = 0
-    low_count = 0
-    for item in findings:
-        severity = item.finding.severity
-        if severity == "high":
-            retained.append(item)
-        elif severity == "medium" and medium_count < medium_limit:
-            retained.append(item)
-            medium_count += 1
-        elif severity == "low" and low_count < low_limit:
-            retained.append(item)
-            low_count += 1
-        else:
-            reason = "medium_limit" if severity == "medium" else "low_limit"
-            limited.append(SuppressedFinding(item.finding, item.category, reason))
-    return retained, limited
 
 
 def _sort_key(item: _TaggedFinding) -> tuple[object, ...]:

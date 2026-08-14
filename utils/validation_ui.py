@@ -163,23 +163,24 @@ def _render_validation_result(validation_result: ValidationResult) -> None:
     high_rows = severity_rows["high"]
     medium_rows = severity_rows["medium"]
     low_rows = severity_rows["low"]
-    folded_count = len(medium_rows) + len(low_rows)
     issue_type_count = len(summarize_finding_rows([
         *high_rows,
         *medium_rows,
         *low_rows,
     ]))
 
-    summary_columns = st.columns(4)
+    summary_columns = st.columns(6)
     summary_columns[0].metric("原始发现", summary["raw_finding_count"])
-    summary_columns[1].metric("直接展示", len(high_rows))
-    summary_columns[2].metric("问题类型", issue_type_count)
-    summary_columns[3].metric("中低风险折叠", folded_count)
+    summary_columns[1].metric("问题类型", issue_type_count)
+    summary_columns[2].metric("重复合并", summary["duplicate_count"])
+    summary_columns[3].metric("高风险", len(high_rows))
+    summary_columns[4].metric("中风险", len(medium_rows))
+    summary_columns[5].metric("低风险", len(low_rows))
 
-    if folded_count:
+    if medium_rows or low_rows:
         st.caption(
-            f"中、低风险的 {folded_count} 个位置按问题类型折叠；"
-            "所有原始 Validation findings 均完整保留。"
+            "中、低风险按问题类型默认折叠；展开后可查看全部具体位置，"
+            "不存在按数量截断。所有原始 Validation findings 均完整保留。"
         )
 
     st.markdown("#### 警告")
